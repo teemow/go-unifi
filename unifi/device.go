@@ -252,8 +252,9 @@ func (c *ApiClient) UpdateDevice(ctx context.Context, site string, d *Device) (*
 
 	// UDM/UCG API may return empty data array on successful PUT.
 	// Fall back to a GET to retrieve the updated device.
+	// Use MAC (not ID) because stat/device/ requires MAC on UCG Ultra.
 	if len(respBody.Data) == 0 {
-		return c.getDevice(ctx, site, d.ID)
+		return c.getDevice(ctx, site, d.MAC)
 	}
 
 	if len(respBody.Data) != 1 {
