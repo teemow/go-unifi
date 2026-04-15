@@ -461,6 +461,7 @@ type DevicePortOverrides struct {
 	Forward                      string            `json:"forward,omitempty"` // all|native|customize|disabled
 	FullDuplex                   bool              `json:"full_duplex,omitempty"`
 	Isolation                    bool              `json:"isolation,omitempty"`
+	LagIdx                       *int64            `json:"lag_idx,omitempty"` // [1-9]|[1-9][0-9]
 	LldpmedEnabled               bool              `json:"lldpmed_enabled,omitempty"`
 	LldpmedNotifyEnabled         bool              `json:"lldpmed_notify_enabled,omitempty"`
 	MirrorPortIDX                *int64            `json:"mirror_port_idx,omitempty"` // [1-9]|[1-4][0-9]|5[0-6]
@@ -502,6 +503,7 @@ func (dst *DevicePortOverrides) UnmarshalJSON(b []byte) error {
 		AggregateMembers           []types.Number `json:"aggregate_members"`
 		Dot1XIDleTimeout           *types.Number  `json:"dot1x_idle_timeout"`
 		EgressRateLimitKbps        *types.Number  `json:"egress_rate_limit_kbps"`
+		LagIdx                     *types.Number  `json:"lag_idx"`
 		MirrorPortIDX              *types.Number  `json:"mirror_port_idx"`
 		PortIDX                    *types.Number  `json:"port_idx"`
 		PriorityQueue1Level        *types.Number  `json:"priority_queue1_level"`
@@ -545,6 +547,14 @@ func (dst *DevicePortOverrides) UnmarshalJSON(b []byte) error {
 		} else if string(*aux.EgressRateLimitKbps) == "" {
 			var zero int64
 			dst.EgressRateLimitKbps = &zero
+		}
+	}
+	if aux.LagIdx != nil {
+		if val, err := aux.LagIdx.Int64(); err == nil {
+			dst.LagIdx = &val
+		} else if string(*aux.LagIdx) == "" {
+			var zero int64
+			dst.LagIdx = &zero
 		}
 	}
 	if aux.MirrorPortIDX != nil {
