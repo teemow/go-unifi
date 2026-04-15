@@ -250,6 +250,12 @@ func (c *ApiClient) UpdateDevice(ctx context.Context, site string, d *Device) (*
 		return nil, err
 	}
 
+	// UDM/UCG API may return empty data array on successful PUT.
+	// Fall back to a GET to retrieve the updated device.
+	if len(respBody.Data) == 0 {
+		return c.getDevice(ctx, site, d.ID)
+	}
+
 	if len(respBody.Data) != 1 {
 		return nil, &NotFoundError{}
 	}
