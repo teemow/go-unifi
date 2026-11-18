@@ -33,6 +33,7 @@ type WLAN struct {
 	NoDelete bool   `json:"attr_no_delete,omitempty"`
 	NoEdit   bool   `json:"attr_no_edit,omitempty"`
 
+	AdvertiseDeviceNameInBeacon bool                       `json:"advertise_device_name_in_beacon"`
 	ApGroupIDs                  []string                   `json:"ap_group_ids,omitempty"`
 	ApGroupMode                 string                     `json:"ap_group_mode,omitempty"` // all|groups|devices
 	AuthCache                   bool                       `json:"auth_cache"`
@@ -41,8 +42,10 @@ type WLAN struct {
 	BroadcastFilterList         []string                   `json:"bc_filter_list,omitempty"` // ^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$
 	BssTransition               bool                       `json:"bss_transition"`
 	CountryBeacon               bool                       `json:"country_beacon"`
+	DNSAssistanceMode           string                     `json:"dns_assistance_mode,omitempty"`    // off|auto|manual
+	DNSAssistanceServers        []string                   `json:"dns_assistance_servers,omitempty"` // ^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$
 	DPIEnabled                  bool                       `json:"dpi_enabled"`
-	DPIgroupID                  string                     `json:"dpigroup_id"`         // [\d\w]+|^$
+	DPIgroupID                  string                     `json:"dpigroup_id"`         // [\d\w-]+|^$
 	DTIM6E                      *int64                     `json:"dtim_6e,omitempty"`   // ^([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$|^$
 	DTIMMode                    string                     `json:"dtim_mode,omitempty"` // default|custom
 	DTIMNa                      *int64                     `json:"dtim_na,omitempty"`   // ^([1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$|^$
@@ -57,6 +60,8 @@ type WLAN struct {
 	Hotspot2ConfEnabled         bool                       `json:"hotspot2conf_enabled"`
 	IappEnabled                 bool                       `json:"iapp_enabled"`
 	IappKey                     string                     `json:"x_iapp_key,omitempty"` // [0-9A-Fa-f]{32}
+	IotChannelLock              bool                       `json:"iot_channel_lock"`
+	IotDTIMLock                 bool                       `json:"iot_dtim_lock"`
 	IsGuest                     bool                       `json:"is_guest"`
 	L2Isolation                 bool                       `json:"l2_isolation"`
 	LogLevel                    string                     `json:"log_level,omitempty"`
@@ -74,7 +79,8 @@ type WLAN struct {
 	MinrateSettingPreference    string                     `json:"minrate_setting_preference,omitempty"` // auto|manual
 	MloEnabled                  bool                       `json:"mlo_enabled"`
 	MulticastEnhanceEnabled     bool                       `json:"mcastenhance_enabled"`
-	Name                        string                     `json:"name,omitempty"` // .{1,32}
+	MulticastSuppressorMode     string                     `json:"multicast_suppressor_mode,omitempty"` // off|conservative|aggressive
+	Name                        string                     `json:"name,omitempty"`                      // .{1,32}
 	NameCombineEnabled          bool                       `json:"name_combine_enabled"`
 	NameCombineSuffix           string                     `json:"name_combine_suffix,omitempty"` // .{0,8}
 	NasIDentifier               string                     `json:"nas_identifier,omitempty"`      // .{0,48}
@@ -97,6 +103,10 @@ type WLAN struct {
 	RADIUSMACaclFormat          string                     `json:"radius_macacl_format,omitempty"` // none_lower|hyphen_lower|colon_lower|none_upper|hyphen_upper|colon_upper
 	RADIUSProfileID             string                     `json:"radiusprofile_id,omitempty"`
 	RoamClusterID               *int64                     `json:"roam_cluster_id,omitempty"` // [0-9]|[1-2][0-9]|[3][0-1]|^$
+	RoamingAssistant6EEnabled   bool                       `json:"roaming_assistant_6e_enabled"`
+	RoamingAssistant6ERssi      *int64                     `json:"roaming_assistant_6e_rssi,omitempty"` // ^-([7-8][0-9]|90)$
+	RoamingAssistantNaEnabled   bool                       `json:"roaming_assistant_na_enabled"`
+	RoamingAssistantNaRssi      *int64                     `json:"roaming_assistant_na_rssi,omitempty"` // ^-([6-7][0-9]|80)$
 	RrmEnabled                  bool                       `json:"rrm_enabled"`
 	SaeAntiClogging             *int64                     `json:"sae_anti_clogging,omitempty"`
 	SaeGroups                   []int64                    `json:"sae_groups,omitempty"`
@@ -119,7 +129,7 @@ type WLAN struct {
 	WEPIDX                      *int64                     `json:"wep_idx,omitempty"`    // [1-4]
 	WLANBand                    string                     `json:"wlan_band,omitempty"`  // 2g|5g|both
 	WLANBands                   []string                   `json:"wlan_bands,omitempty"` // 2g|5g|6g
-	WLANGroupID                 string                     `json:"wlangroup_id"`
+	WLANGroupID                 string                     `json:"wlangroup_id,omitempty"`
 	WPA3Enhanced192             bool                       `json:"wpa3_enhanced_192"`
 	WPA3FastRoaming             bool                       `json:"wpa3_fast_roaming"`
 	WPA3Support                 bool                       `json:"wpa3_support"`
@@ -132,18 +142,20 @@ type WLAN struct {
 func (dst *WLAN) UnmarshalJSON(b []byte) error {
 	type Alias WLAN
 	aux := &struct {
-		DTIM6E                *types.Number  `json:"dtim_6e"`
-		DTIMNa                *types.Number  `json:"dtim_na"`
-		DTIMNg                *types.Number  `json:"dtim_ng"`
-		GroupRekey            *types.Number  `json:"group_rekey"`
-		MinrateNaDataRateKbps *types.Number  `json:"minrate_na_data_rate_kbps"`
-		MinrateNgDataRateKbps *types.Number  `json:"minrate_ng_data_rate_kbps"`
-		RoamClusterID         *types.Number  `json:"roam_cluster_id"`
-		SaeAntiClogging       *types.Number  `json:"sae_anti_clogging"`
-		SaeGroups             []types.Number `json:"sae_groups"`
-		SaeSync               *types.Number  `json:"sae_sync"`
-		VLAN                  *types.Number  `json:"vlan"`
-		WEPIDX                *types.Number  `json:"wep_idx"`
+		DTIM6E                 *types.Number  `json:"dtim_6e"`
+		DTIMNa                 *types.Number  `json:"dtim_na"`
+		DTIMNg                 *types.Number  `json:"dtim_ng"`
+		GroupRekey             *types.Number  `json:"group_rekey"`
+		MinrateNaDataRateKbps  *types.Number  `json:"minrate_na_data_rate_kbps"`
+		MinrateNgDataRateKbps  *types.Number  `json:"minrate_ng_data_rate_kbps"`
+		RoamClusterID          *types.Number  `json:"roam_cluster_id"`
+		RoamingAssistant6ERssi *types.Number  `json:"roaming_assistant_6e_rssi"`
+		RoamingAssistantNaRssi *types.Number  `json:"roaming_assistant_na_rssi"`
+		SaeAntiClogging        *types.Number  `json:"sae_anti_clogging"`
+		SaeGroups              []types.Number `json:"sae_groups"`
+		SaeSync                *types.Number  `json:"sae_sync"`
+		VLAN                   *types.Number  `json:"vlan"`
+		WEPIDX                 *types.Number  `json:"wep_idx"`
 
 		*Alias
 	}{
@@ -158,24 +170,24 @@ func (dst *WLAN) UnmarshalJSON(b []byte) error {
 		if val, err := aux.DTIM6E.Int64(); err == nil {
 			dst.DTIM6E = &val
 		} else if string(*aux.DTIM6E) == "" {
-			var zero int64
-			dst.DTIM6E = &zero
+			// "" means unset; 0 is not a valid value for this field.
+			dst.DTIM6E = nil
 		}
 	}
 	if aux.DTIMNa != nil {
 		if val, err := aux.DTIMNa.Int64(); err == nil {
 			dst.DTIMNa = &val
 		} else if string(*aux.DTIMNa) == "" {
-			var zero int64
-			dst.DTIMNa = &zero
+			// "" means unset; 0 is not a valid value for this field.
+			dst.DTIMNa = nil
 		}
 	}
 	if aux.DTIMNg != nil {
 		if val, err := aux.DTIMNg.Int64(); err == nil {
 			dst.DTIMNg = &val
 		} else if string(*aux.DTIMNg) == "" {
-			var zero int64
-			dst.DTIMNg = &zero
+			// "" means unset; 0 is not a valid value for this field.
+			dst.DTIMNg = nil
 		}
 	}
 	if aux.GroupRekey != nil {
@@ -210,6 +222,22 @@ func (dst *WLAN) UnmarshalJSON(b []byte) error {
 			dst.RoamClusterID = &zero
 		}
 	}
+	if aux.RoamingAssistant6ERssi != nil {
+		if val, err := aux.RoamingAssistant6ERssi.Int64(); err == nil {
+			dst.RoamingAssistant6ERssi = &val
+		} else if string(*aux.RoamingAssistant6ERssi) == "" {
+			var zero int64
+			dst.RoamingAssistant6ERssi = &zero
+		}
+	}
+	if aux.RoamingAssistantNaRssi != nil {
+		if val, err := aux.RoamingAssistantNaRssi.Int64(); err == nil {
+			dst.RoamingAssistantNaRssi = &val
+		} else if string(*aux.RoamingAssistantNaRssi) == "" {
+			var zero int64
+			dst.RoamingAssistantNaRssi = &zero
+		}
+	}
 	if aux.SaeAntiClogging != nil {
 		if val, err := aux.SaeAntiClogging.Int64(); err == nil {
 			dst.SaeAntiClogging = &val
@@ -236,8 +264,8 @@ func (dst *WLAN) UnmarshalJSON(b []byte) error {
 		if val, err := aux.VLAN.Int64(); err == nil {
 			dst.VLAN = &val
 		} else if string(*aux.VLAN) == "" {
-			var zero int64
-			dst.VLAN = &zero
+			// "" means unset; 0 is not a valid value for this field.
+			dst.VLAN = nil
 		}
 	}
 	if aux.WEPIDX != nil {
@@ -599,7 +627,7 @@ func (dst *WLANNaiRealmList) UnmarshalJSON(b []byte) error {
 }
 
 type WLANPredefinedServices struct {
-	Code string `json:"code,omitempty"` // amazon_devices|android_tv_remote|apple_airDrop|apple_airPlay|apple_file_sharing|apple_iChat|apple_iTunes|aqara|bose|dns_service_discovery|ftp_servers|google_chromecast|homeKit|matter_network|philips_hue|printers|roku|scanners|sonos|spotify_connect|ssh_servers|time_capsule|web_servers|windows_file_sharing_samba
+	Code string `json:"code,omitempty"` // amazon_devices|android_tv_remote|apple_airDrop|apple_airPlay|apple_file_sharing|apple_iChat|apple_iTunes|aqara|bose|dns_service_discovery|ftp_servers|google_chromecast|homeKit|matter_network|philips_hue|printers|roku|scanners|shelly|sonos|spotify_connect|ssh_servers|time_capsule|web_servers|windows_file_sharing_samba
 }
 
 func (dst *WLANPredefinedServices) UnmarshalJSON(b []byte) error {

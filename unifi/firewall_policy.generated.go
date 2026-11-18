@@ -81,22 +81,30 @@ func (dst *FirewallPolicy) UnmarshalJSON(b []byte) error {
 }
 
 type FirewallPolicyDestination struct {
-	IPs                []string `json:"ips,omitempty"`
-	MatchMAC           bool     `json:"match_mac"`
-	MatchOppositeIPs   bool     `json:"match_opposite_ips"`
-	MatchOppositePorts bool     `json:"match_opposite_ports"`
-	MatchingTarget     string   `json:"matching_target,omitempty"`      // ANY|DEVICE|IP|NETWORK|MAC
-	MatchingTargetType string   `json:"matching_target_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
-	Port               *int64   `json:"port,omitempty"`                 // [1-9][0-9]{0,4}
-	PortGroupID        string   `json:"port_group_id,omitempty"`
-	PortMatchingType   string   `json:"port_matching_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
-	ZoneID             string   `json:"zone_id,omitempty"`
+	ClientMACs            []string `json:"client_macs,omitempty"`
+	IPGroupID             string   `json:"ip_group_id,omitempty"`
+	IPs                   []string `json:"ips,omitempty"`
+	Iid                   string   `json:"iid,omitempty"`
+	MatchMAC              bool     `json:"match_mac"`
+	MatchOppositeIPs      bool     `json:"match_opposite_ips"`
+	MatchOppositeIid      bool     `json:"match_opposite_iid"`
+	MatchOppositeNetworks bool     `json:"match_opposite_networks"`
+	MatchOppositePorts    bool     `json:"match_opposite_ports"`
+	MatchingTarget        string   `json:"matching_target,omitempty"`      // ANY|DEVICE|IP|NETWORK|CLIENT|MAC|WEB|REGION|IID
+	MatchingTargetType    string   `json:"matching_target_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
+	NetworkIDs            []string `json:"network_ids,omitempty"`
+	Port                  string   `json:"port,omitempty"`
+	PortGroupID           string   `json:"port_group_id,omitempty"`
+	PortMatchingType      string   `json:"port_matching_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
+	Regions               []string `json:"regions,omitempty"`
+	WebDomains            []string `json:"web_domains,omitempty"`
+	ZoneID                string   `json:"zone_id,omitempty"`
 }
 
 func (dst *FirewallPolicyDestination) UnmarshalJSON(b []byte) error {
 	type Alias FirewallPolicyDestination
 	aux := &struct {
-		Port *types.Number `json:"port"`
+		Port types.Number `json:"port"`
 
 		*Alias
 	}{
@@ -107,23 +115,18 @@ func (dst *FirewallPolicyDestination) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return fmt.Errorf("unable to unmarshal alias: %w", err)
 	}
-	if aux.Port != nil {
-		if val, err := aux.Port.Int64(); err == nil {
-			dst.Port = &val
-		} else if string(*aux.Port) == "" {
-			var zero int64
-			dst.Port = &zero
-		}
-	}
+	dst.Port = aux.Port.String()
 
 	return nil
 }
 
 type FirewallPolicySchedule struct {
 	Date           string   `json:"date,omitempty"`
-	Mode           string   `json:"mode,omitempty"`           // ALWAYS|EVERY_DAY|EVERY_WEEK|ONE_TIME_ONLY
+	DateEnd        string   `json:"date_end,omitempty"`
+	DateStart      string   `json:"date_start,omitempty"`
+	Mode           string   `json:"mode,omitempty"`           // ALWAYS|EVERY_DAY|EVERY_WEEK|ONE_TIME_ONLY|CUSTOM
 	RepeatOnDays   []string `json:"repeat_on_days,omitempty"` // mon|tue|wed|thu|fri|sat|sun
-	TimeAllDay     bool     `json:"time_all_day"`
+	TimeAllDay     *bool    `json:"time_all_day,omitempty"`
 	TimeRangeEnd   string   `json:"time_range_end,omitempty"`
 	TimeRangeStart string   `json:"time_range_start,omitempty"`
 }
@@ -145,22 +148,31 @@ func (dst *FirewallPolicySchedule) UnmarshalJSON(b []byte) error {
 }
 
 type FirewallPolicySource struct {
-	IPs                []string `json:"ips,omitempty"`
-	MatchMAC           bool     `json:"match_mac"`
-	MatchOppositeIPs   bool     `json:"match_opposite_ips"`
-	MatchOppositePorts bool     `json:"match_opposite_ports"`
-	MatchingTarget     string   `json:"matching_target,omitempty"`      // ANY|DEVICE|IP|NETWORK|MAC
-	MatchingTargetType string   `json:"matching_target_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
-	Port               *int64   `json:"port,omitempty"`                 // [1-9][0-9]{0,4}
-	PortGroupID        string   `json:"port_group_id,omitempty"`
-	PortMatchingType   string   `json:"port_matching_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
-	ZoneID             string   `json:"zone_id,omitempty"`
+	ClientMACs            []string `json:"client_macs,omitempty"`
+	IPGroupID             string   `json:"ip_group_id,omitempty"`
+	IPs                   []string `json:"ips,omitempty"`
+	Iid                   string   `json:"iid,omitempty"`
+	MAC                   string   `json:"mac,omitempty"`
+	MatchMAC              bool     `json:"match_mac"`
+	MatchOppositeIPs      bool     `json:"match_opposite_ips"`
+	MatchOppositeIid      bool     `json:"match_opposite_iid"`
+	MatchOppositeNetworks bool     `json:"match_opposite_networks"`
+	MatchOppositePorts    bool     `json:"match_opposite_ports"`
+	MatchingTarget        string   `json:"matching_target,omitempty"`      // ANY|DEVICE|IP|NETWORK|CLIENT|MAC|WEB|REGION|IID
+	MatchingTargetType    string   `json:"matching_target_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
+	NetworkIDs            []string `json:"network_ids,omitempty"`
+	Port                  string   `json:"port,omitempty"`
+	PortGroupID           string   `json:"port_group_id,omitempty"`
+	PortMatchingType      string   `json:"port_matching_type,omitempty"` // ANY|SPECIFIC|LIST|OBJECT
+	Regions               []string `json:"regions,omitempty"`
+	WebDomains            []string `json:"web_domains,omitempty"`
+	ZoneID                string   `json:"zone_id,omitempty"`
 }
 
 func (dst *FirewallPolicySource) UnmarshalJSON(b []byte) error {
 	type Alias FirewallPolicySource
 	aux := &struct {
-		Port *types.Number `json:"port"`
+		Port types.Number `json:"port"`
 
 		*Alias
 	}{
@@ -171,14 +183,7 @@ func (dst *FirewallPolicySource) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return fmt.Errorf("unable to unmarshal alias: %w", err)
 	}
-	if aux.Port != nil {
-		if val, err := aux.Port.Int64(); err == nil {
-			dst.Port = &val
-		} else if string(*aux.Port) == "" {
-			var zero int64
-			dst.Port = &zero
-		}
-	}
+	dst.Port = aux.Port.String()
 
 	return nil
 }

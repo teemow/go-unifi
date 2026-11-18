@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,33 @@ import (
 const (
 	loginPath    = "/api/login"
 	loginPathNew = "/api/auth/login"
+)
+
+// errLoginNotEstablished is returned by login when the controller answers with a
+// success status but no session was established (e.g. an empty body returned
+// under a login rate-limit). It is retryable by loginWithRetry.
+var errLoginNotEstablished = errors.New("login response did not establish a session")
+
+// Login retry tuning. These are vars (not consts) so tests can shorten the
+// backoff; production code never mutates them.
+var (
+	// loginRetryMax bounds how many times loginWithRetry will attempt a login
+	// before giving up. UniFi rate-limits POST /api/auth/login, so a normal
+	// Terraform workflow (several back-to-back operations) needs more than the
+	// transport-level retry budget to ride out the limit.
+	loginRetryMax = 8
+	// loginRetryBackoff is the base wait between login attempts when the
+	// controller sends no usable Retry-After hint. UniFi's login 429 carries
+	// none, so the wait grows exponentially from this base (capped by
+	// loginRetryBackoffCap) — with the defaults the total budget is ~90s, enough
+	// to ride out a real login-throttle window (observed ~45s on a live UDM-Pro
+	// after several back-to-back runs).
+	loginRetryBackoff = 1 * time.Second
+	// loginRetryBackoffCap caps each exponential-fallback wait.
+	loginRetryBackoffCap = 30 * time.Second
+	// loginRetryMaxWait caps an honored Retry-After so a pathological hint
+	// (e.g. Retry-After: 3600) cannot stall the whole run.
+	loginRetryMaxWait = 2 * time.Minute
 )
 
 // Config holds all configuration for creating a new ApiClient.
@@ -63,6 +91,40 @@ func New(ctx context.Context, cfg *Config) (*ApiClient, error) {
 
 	if cfg.RetryMax != nil {
 		c.RetryMax = *cfg.RetryMax
+	}
+
+	// Login 429s are surfaced as RateLimitError (see doRequest) so loginWithRetry
+	// can honor Retry-After with a login-specific budget. All other requests let
+	// the transport retry 429 itself — retryablehttp's DefaultBackoff honors
+	// Retry-After — because with API-key auth there is no login step, and a
+	// single controller rate-limit hit would otherwise fail the whole run.
+	c.CheckRetry = func(ctx context.Context, resp *http.Response, err error) (bool, error) {
+		if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+			if resp.Request != nil &&
+				(strings.HasSuffix(resp.Request.URL.Path, loginPath) ||
+					strings.HasSuffix(resp.Request.URL.Path, loginPathNew)) {
+				return false, nil
+			}
+			return true, nil
+		}
+		return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+	}
+
+	// When the retry budget is spent on a retryable status (429, 5xx), hand the
+	// final response back so doRequest reports its status and body (and a typed
+	// RateLimitError for 429) instead of an opaque "giving up" error.
+	c.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
+		if resp != nil && err == nil {
+			return resp, nil
+		}
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+		}
+		if err == nil {
+			err = fmt.Errorf("giving up after %d attempt(s)", numTries)
+		}
+		return nil, err
 	}
 
 	if cfg.AllowInsecure {
@@ -106,7 +168,7 @@ func New(ctx context.Context, cfg *Config) (*ApiClient, error) {
 	_ = client.setAPIUrlStyle(ctx)
 
 	if cfg.Username != "" && cfg.Password != "" && client.apiKey == "" {
-		if err := client.login(ctx); err != nil {
+		if err := client.loginWithRetry(ctx); err != nil {
 			return nil, fmt.Errorf("unable to login: %w", err)
 		}
 	}
@@ -129,6 +191,7 @@ type ApiClient struct {
 	loginPath string
 	apiPath   string // path to API, e.g. "proxy/network" for new style API, "/api" for old style API
 
+	csrfMu      sync.Mutex // guards csrf and tokenExpiry, which concurrent requests update under the loginMu read lock
 	csrf        string
 	tokenExpiry time.Time
 	loginErr    error // cached login error to prevent retry storms
@@ -155,9 +218,18 @@ func (c *ApiClient) isNewStyle() bool {
 // For standalone (old-style): checks the cookiejar for a unifises session cookie.
 func (c *ApiClient) isLoggedIn() bool {
 	if c.isNewStyle() {
+		c.csrfMu.Lock()
+		defer c.csrfMu.Unlock()
 		return c.csrf != ""
 	}
 	return c.hasCookie("unifises")
+}
+
+// sessionExpired reports whether the tracked session expiry has passed.
+func (c *ApiClient) sessionExpired() bool {
+	c.csrfMu.Lock()
+	defer c.csrfMu.Unlock()
+	return !c.tokenExpiry.IsZero() && time.Now().After(c.tokenExpiry)
 }
 
 // hasCookie checks if the cookiejar contains a cookie with the given name.
@@ -168,6 +240,40 @@ func (c *ApiClient) hasCookie(name string) bool {
 	return slices.ContainsFunc(c.c.HTTPClient.Jar.Cookies(c.baseURL), func(cookie *http.Cookie) bool {
 		return cookie.Name == name
 	})
+}
+
+// csrfFromJWTCookie extracts the csrfToken claim from a UniFi OS auth cookie
+// (TOKEN or UOS_TOKEN), whose value is a JWT, along with the token expiry from
+// the standard exp claim (zero when absent). Some UniFi OS builds return the
+// CSRF token only in this cookie, not in a response header. No signature
+// verification is performed — this is the client's own session cookie and only
+// individual claims are read from it.
+func csrfFromJWTCookie(cookies []*http.Cookie) (string, time.Time) {
+	for _, ck := range cookies {
+		if ck.Name != "TOKEN" && ck.Name != "UOS_TOKEN" {
+			continue
+		}
+		parts := strings.Split(ck.Value, ".")
+		if len(parts) < 2 {
+			continue
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			continue
+		}
+		var claims struct {
+			CSRFToken string `json:"csrfToken"`
+			Exp       int64  `json:"exp"`
+		}
+		if json.Unmarshal(payload, &claims) == nil && claims.CSRFToken != "" {
+			var exp time.Time
+			if claims.Exp > 0 {
+				exp = time.Unix(claims.Exp, 0)
+			}
+			return claims.CSRFToken, exp
+		}
+	}
+	return "", time.Time{}
 }
 
 func (c *ApiClient) setBaseURL(base string) error {
@@ -370,10 +476,13 @@ func (c *ApiClient) login(ctx context.Context) error {
 	if c.baseURL != nil {
 		c.c.HTTPClient.Jar.SetCookies(c.baseURL, []*http.Cookie{
 			{Name: "TOKEN", MaxAge: -1},
+			{Name: "UOS_TOKEN", MaxAge: -1},
 			{Name: "unifises", MaxAge: -1},
 		})
 	}
+	c.csrfMu.Lock()
 	c.csrf = ""
+	c.csrfMu.Unlock()
 
 	// Call doRequest directly to avoid login-check recursion and deadlock on loginMu.
 	err := c.doRequest(ctx, http.MethodPost, c.loginPath, &struct {
@@ -388,8 +497,64 @@ func (c *ApiClient) login(ctx context.Context) error {
 		return err
 	}
 
+	// A 2xx with no session (empty body / missing CSRF cookie) happens when the
+	// controller throttles login without a clear error status. Treat it as a
+	// retryable failure instead of a silent "logged-in but broken" state.
+	if !c.isLoggedIn() {
+		c.loginErr = errLoginNotEstablished
+		return errLoginNotEstablished
+	}
+
 	c.loginErr = nil
 	return nil
+}
+
+// loginWithRetry performs login, retrying on controller rate-limiting (HTTP 429)
+// and on success-without-session responses. It honors the controller's
+// Retry-After hint (capped by loginRetryMaxWait) so a normal Terraform workflow
+// survives the login rate-limit instead of failing with a confusing error.
+func (c *ApiClient) loginWithRetry(ctx context.Context) error {
+	var lastErr error
+	for attempt := 0; attempt < loginRetryMax; attempt++ {
+		err := c.login(ctx)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		var rle *RateLimitError
+		isRateLimit := errors.As(err, &rle)
+		if !isRateLimit && !errors.Is(err, errLoginNotEstablished) {
+			return err // not a transient rate-limit condition
+		}
+
+		if attempt == loginRetryMax-1 {
+			break // don't sleep after the final attempt
+		}
+
+		var wait time.Duration
+		if isRateLimit && rle.RetryAfter > 0 {
+			// Honor the controller's Retry-After hint, capped.
+			wait = rle.RetryAfter
+			if wait > loginRetryMaxWait {
+				wait = loginRetryMaxWait
+			}
+		} else {
+			// No usable Retry-After (UniFi's login 429 sends none): back off
+			// exponentially from the base so a single run rides out the window.
+			wait = loginRetryBackoff << attempt
+			if wait <= 0 || wait > loginRetryBackoffCap {
+				wait = loginRetryBackoffCap
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return lastErr
 }
 
 // ensureLoggedIn acquires an exclusive lock and performs login if needed.
@@ -399,7 +564,7 @@ func (c *ApiClient) ensureLoggedIn(ctx context.Context) error {
 	defer c.loginMu.Unlock()
 
 	// Double-check: another goroutine may have already logged in while we waited.
-	if c.isLoggedIn() && (c.tokenExpiry.IsZero() || time.Now().Before(c.tokenExpiry)) {
+	if c.isLoggedIn() && !c.sessionExpired() {
 		return nil
 	}
 
@@ -410,7 +575,7 @@ func (c *ApiClient) ensureLoggedIn(ctx context.Context) error {
 
 	// Clear any stale loginErr before attempting (e.g. token-expiry refresh).
 	c.loginErr = nil
-	return c.login(ctx)
+	return c.loginWithRetry(ctx)
 }
 
 func (c *ApiClient) setServerVersion(ctx context.Context) (err error) {
@@ -458,7 +623,7 @@ func (c *ApiClient) do(
 	if c.apiKey == "" && c.username != "" && c.password != "" {
 		// Wait for any in-progress login to complete, then check if we need to login.
 		c.loginMu.RLock()
-		needsLogin := !c.isLoggedIn() || (!c.tokenExpiry.IsZero() && time.Now().After(c.tokenExpiry))
+		needsLogin := !c.isLoggedIn() || c.sessionExpired()
 		c.loginMu.RUnlock()
 
 		if needsLogin {
@@ -545,8 +710,11 @@ func (c *ApiClient) doRequest(
 	if c.apiKey != "" {
 		req.Header.Set("X-Api-Key", c.apiKey)
 	}
-	if c.csrf != "" {
-		req.Header.Set("X-Csrf-Token", c.csrf)
+	c.csrfMu.Lock()
+	csrfToken := c.csrf
+	c.csrfMu.Unlock()
+	if csrfToken != "" {
+		req.Header.Set("X-Csrf-Token", csrfToken)
 	}
 
 	resp, err := c.c.Do(req)
@@ -565,38 +733,80 @@ func (c *ApiClient) doRequest(
 		}
 	}
 
+	// Surface controller rate-limiting (HTTP 429) as a typed error so callers
+	// (notably login) can back off honoring Retry-After instead of failing with
+	// an opaque error. The transport is configured not to retry 429 itself.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return &RateLimitError{RetryAfter: parseRetryAfter(resp)}
+	}
+
+	c.csrfMu.Lock()
 	if csrf := resp.Header.Get("X-Updated-Csrf-Token"); csrf != "" {
 		c.csrf = csrf
 	} else if csrf := resp.Header.Get("X-Csrf-Token"); csrf != "" {
 		c.csrf = csrf
+	} else if csrf, exp := csrfFromJWTCookie(resp.Cookies()); csrf != "" {
+		// Some UniFi OS builds omit the CSRF response headers and return the
+		// token only inside the TOKEN/UOS_TOKEN JWT cookie. Without this
+		// fallback, login on those builds never establishes a session
+		// (isLoggedIn requires a non-empty CSRF token on new-style
+		// controllers). The JWT's exp claim drives expiry tracking on these
+		// builds, which also omit X-Token-Expire-Time.
+		c.csrf = csrf
+		if !exp.IsZero() {
+			c.tokenExpiry = exp
+		}
 	}
 	if exp := resp.Header.Get("X-Token-Expire-Time"); exp != "" {
 		if ms, err := strconv.ParseInt(exp, 10, 64); err == nil {
 			c.tokenExpiry = time.UnixMilli(ms)
 		}
 	}
+	c.csrfMu.Unlock()
 
 	successCodes := []int{http.StatusOK, http.StatusCreated, http.StatusAccepted, http.StatusNoContent}
 	if !slices.Contains(successCodes, resp.StatusCode) {
 		if resp.StatusCode == http.StatusUnauthorized {
 			return &LoginRequiredError{APIKey: c.apiKey != ""}
 		}
+		errBytes, _ := io.ReadAll(resp.Body)
 		errBody := struct {
 			Meta meta `json:"meta"`
 			Data []struct {
 				Meta meta `json:"meta"`
 			} `json:"data"`
 		}{}
-		if err = json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
-			return err
-		}
 		var apiErr error
-		if len(errBody.Data) > 0 && errBody.Data[0].Meta.RC == "error" {
+		if err = json.Unmarshal(errBytes, &errBody); err != nil {
+			// Proxies and gateways answer 5xx with HTML or plain text.
+			apiErr = &APIError{Message: nonJSONErrorMessage(errBytes)}
+		} else if len(errBody.Data) > 0 && errBody.Data[0].Meta.RC == "error" {
 			// check first error in data, should we look for more than one?
 			apiErr = errBody.Data[0].Meta.error()
 		}
 		if apiErr == nil {
 			apiErr = errBody.Meta.error()
+		}
+		// The v2 API reports errors with a different shape
+		// ({"code","message","errorCode"}) that the v1 meta decoder above leaves
+		// empty. Fall back to it so callers get the controller's actual message
+		// (e.g. api.err.PurePoeRequiresUplinkException) instead of a bare HTTP 400.
+		ae := &APIError{}
+		if errors.As(apiErr, &ae) {
+			v2 := struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			}{}
+			if json.Unmarshal(errBytes, &v2) == nil && (v2.Message != "" || v2.Code != "") {
+				msg := v2.Message
+				switch {
+				case msg == "":
+					msg = v2.Code
+				case v2.Code != "":
+					msg = v2.Code + ": " + msg
+				}
+				apiErr = &APIError{RC: v2.Code, Message: msg}
+			}
 		}
 		return fmt.Errorf(
 			"%w (%s) for %s %s\npayload: %s",
@@ -604,7 +814,7 @@ func (c *ApiClient) doRequest(
 			strings.TrimSpace(resp.Status),
 			method,
 			url.String(),
-			string(reqBytes),
+			redactSensitivePayload(reqBytes),
 		)
 	}
 
@@ -636,6 +846,111 @@ func (m *meta) error() error {
 	}
 
 	return nil
+}
+
+// nonJSONErrorMessage describes an error response body that is not JSON.
+func nonJSONErrorMessage(body []byte) string {
+	const maxLen = 200
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return "empty response body"
+	}
+	if len(s) > maxLen {
+		s = s[:maxLen] + "..."
+	}
+	return s
+}
+
+// parseRetryAfter reads the Retry-After header from a 429 response, supporting
+// both the delta-seconds form ("120") and the HTTP-date form. Returns 0 when the
+// header is absent or unparseable.
+func parseRetryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	v := resp.Header.Get("Retry-After")
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// sensitivePayloadKeys are substrings of JSON field names whose values carry
+// secrets (WireGuard/IPsec keys, passphrases, RADIUS secrets, …) and must be
+// redacted from error messages and logs.
+var sensitivePayloadKeys = []string{
+	"private_key",
+	"passphrase",
+	"pre_shared_key",
+	"password",
+	"secret",
+	"psk",
+	"token",
+	"preshared_key",
+}
+
+// redactSensitivePayload returns the JSON request body with the values of any
+// sensitive fields replaced by "REDACTED", so secrets (e.g.
+// x_wireguard_private_key, x_passphrase, x_ipsec_pre_shared_key) are never
+// leaked into error messages. If the body is not valid JSON it is omitted.
+func redactSensitivePayload(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return "[non-JSON payload omitted]"
+	}
+	redactSensitiveValue(v)
+	out, err := json.Marshal(v)
+	if err != nil {
+		return "[payload omitted]"
+	}
+	return string(out)
+}
+
+func redactSensitiveValue(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if isSensitiveKey(k) {
+				if _, ok := val.(string); ok {
+					t[k] = "REDACTED"
+					continue
+				}
+			}
+			redactSensitiveValue(val)
+		}
+	case []any:
+		for _, item := range t {
+			redactSensitiveValue(item)
+		}
+	}
+}
+
+func isSensitiveKey(k string) bool {
+	lk := strings.ToLower(k)
+	// UniFi prefixes its hidden fields, such as x_iapp_key and x_wep, with x_.
+	if strings.HasPrefix(lk, "x_") {
+		return true
+	}
+	for _, s := range sensitivePayloadKeys {
+		if strings.Contains(lk, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func Ptr[T any](in T) *T {

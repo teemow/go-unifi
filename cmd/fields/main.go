@@ -98,6 +98,7 @@ var fieldReps = []replacement{
 	{"IPStop", "Stop"},
 	{"IPVersion", "Version"},
 	{"IPOrSubnet", "Address"},
+	{"WireguardInterfaceBindingModeVersion", "WireguardInterfaceBindingModeIPVersion"},
 }
 
 var fileReps = []replacement{
@@ -115,8 +116,11 @@ var fileReps = []replacement{
 }
 
 type ResourceInfo struct {
-	StructName     string
-	ResourcePath   string
+	StructName   string
+	ResourcePath string
+	// CreateSuffix is appended to ResourcePath for the create POST, for v2
+	// resources whose create endpoint is not the collection itself.
+	CreateSuffix   string
 	Types          map[string]*FieldInfo
 	FieldProcessor func(name string, f *FieldInfo) error
 }
@@ -132,6 +136,37 @@ type FieldInfo struct {
 	Fields              map[string]*FieldInfo
 	CustomUnmarshalType string
 	CustomUnmarshalFunc string
+}
+
+// EmptyStringIsNil reports whether a numeric field the controller stores as
+// "" should decode to nil rather than to a pointer to 0. That is the case when
+// the field's validation accepts the empty string but rejects 0 (e.g.
+// wan_egress_qos, `[1-7]|^$`): decoding "" as 0 would make a later update
+// re-send 0, which the controller rejects with api.err.InvalidPayload (#105).
+// Fields whose validation accepts 0, or that carry no validation, keep the
+// historical "" -> 0 mapping.
+func (f *FieldInfo) EmptyStringIsNil() bool {
+	if f.FieldValidation == "" {
+		return false
+	}
+	re, err := regexp.Compile(`^(?:` + f.FieldValidation + `)$`)
+	if err != nil {
+		return false
+	}
+	return re.MatchString("") && !re.MatchString("0")
+}
+
+// clearNativeNetworkOmitEmpty keeps native_networkconf_id serialized even when
+// empty. The controller treats an explicit "" as "set the native network to
+// None", but the default codegen marks the string omitempty, so "" is dropped
+// from the body and clearing the native VLAN silently no-ops (#383). Applied to
+// PortProfile (the reported case). The same field on DevicePortOverrides is a
+// nested type that resource FieldProcessors do not reach, so it is unaffected.
+func clearNativeNetworkOmitEmpty(name string, f *FieldInfo) error {
+	if name == "NATiveNetworkID" {
+		f.OmitEmpty = false
+	}
+	return nil
 }
 
 func NewResource(structName string, resourcePath string) *ResourceInfo {
@@ -168,21 +203,95 @@ func NewResource(structName string, resourcePath string) *ResourceInfo {
 	case resource.IsSetting():
 		resource.ResourcePath = strcase.ToSnake(strings.TrimPrefix(structName, "Setting"))
 		baseType.Fields[" Key"] = NewFieldInfo("Key", "key", fields.String, "", false, false, false, "")
-		if resource.StructName == "SettingUsg" {
+		switch resource.StructName {
+		case "SettingNtp":
+			resource.FieldProcessor = func(name string, f *FieldInfo) error {
+				switch name {
+				case "NtpServer1", "NtpServer2", "NtpServer3", "NtpServer4":
+					// Nil omits the server; a pointer to "" clears it.
+					f.OmitEmpty = true
+					f.IsPointer = true
+				}
+				return nil
+			}
+		case "SettingUsg":
 			// Removed in v7, retaining for backwards compatibility
 			baseType.Fields["MdnsEnabled"] = NewFieldInfo("MdnsEnabled", "mdns_enabled", fields.Bool, "", false, false, false, "")
+		case "SettingMdns":
+			// UniFi Network 10.x selects the networks mDNS is reflected on with
+			// these two keys; the ace.jar field spec predates them.
+			baseType.Fields["EnabledFor"] = NewFieldInfo("EnabledFor", "enabled_for", fields.String, "all|some|none", true, false, false, "")
+			baseType.Fields["EnabledForNetworkIDs"] = NewFieldInfo("EnabledForNetworkIDs", "enabled_for_network_ids", fields.String, "", true, true, false, "")
+		case "SettingRadioAi":
+			// Present on 10.x controllers, absent from the ace.jar field spec.
+			// A pointer so that a controller without the key is not sent false.
+			baseType.Fields["AutoEnabled"] = NewFieldInfo("AutoEnabled", "auto_enabled", fields.Bool, "", true, false, true, "")
 		}
 	case resource.StructName == "DNSRecord":
 		resource.ResourcePath = "static-dns"
 	case resource.StructName == "FirewallZone":
 		resource.ResourcePath = "firewall/zone"
+		resource.FieldProcessor = func(name string, f *FieldInfo) error {
+			// default_zone is server-computed/read-only. Sending it in the
+			// create body makes UniFi Network 10.4.x reject the POST with
+			// "Unrecognized field default_zone" (terraform-provider-unifi#310).
+			// Make it a *bool with omitempty so an unset value is omitted.
+			if name == "DefaultZone" {
+				f.OmitEmpty = true
+				f.IsPointer = true
+			}
+			// network_ids must always be present in the create body. The v2
+			// firewall/zone POST returns HTTP 500 when the field is omitted
+			// entirely, and the default codegen marks slices omitempty — which
+			// drops an empty []string and breaks creating a zone that has no
+			// networks assigned yet. Keep it always serialized so an empty list
+			// is sent as "network_ids":[] (which the controller accepts).
+			if name == "NetworkIDs" {
+				f.OmitEmpty = false
+			}
+			return nil
+		}
 	case resource.StructName == "OSPFRouter":
 		resource.ResourcePath = "ospf/router"
 	case resource.StructName == "FirewallPolicy":
 		resource.ResourcePath = "firewall-policies"
+		resource.FieldProcessor = func(name string, f *FieldInfo) error {
+			// time_all_day is semantically different when absent versus false:
+			// most ALWAYS schedules omit it, while legacy schedules can retain an
+			// explicit false value alongside stale timing metadata. Preserve that
+			// wire-level distinction so clients can round-trip or normalize it.
+			if name == "TimeAllDay" {
+				f.OmitEmpty = true
+				f.IsPointer = true
+			}
+			// The source/destination `port` is not a single number: the
+			// firmware stores and expects it as a string, and it may carry a
+			// comma-separated list (e.g. "80,443"). Model it as a string and
+			// decode either wire form (bare number or quoted string) through
+			// types.Number. An empty string is dropped by omitempty, which is
+			// what the controller expects for port_matching_type ANY
+			// (terraform-provider-unifi #288, #286).
+			if name == "Port" {
+				f.FieldType = fields.String
+				f.IsPointer = false
+				f.OmitEmpty = true
+				f.FieldValidation = ""
+				f.CustomUnmarshalType = fields.Number
+				f.CustomUnmarshalFunc = ""
+			}
+			return nil
+		}
 	case resource.StructName == "TrafficRoute":
 		resource.ResourcePath = "trafficroutes"
+	case resource.StructName == "QOSRule":
+		resource.ResourcePath = "qos-rules"
+	case resource.StructName == "ContentFiltering":
+		resource.ResourcePath = "content-filtering"
+		resource.CreateSuffix = "/create"
 	case resource.StructName == "Network":
+		// Removed from the 10.x field spec, retaining for backwards
+		// compatibility with pre-10.x controllers (mirrors SettingUsg above).
+		baseType.Fields["MdnsEnabled"] = NewFieldInfo("MdnsEnabled", "mdns_enabled", fields.Bool, "", false, false, false, "")
 		baseType.Fields["WANEgressQOSEnabled"] = NewFieldInfo("WANEgressQOSEnabled", "wan_egress_qos_enabled", fields.Bool, "", true, false, true, "")
 		baseType.Fields["UPnPEnabled"] = NewFieldInfo("UPnPEnabled", "upnp_enabled", fields.Bool, "", true, false, true, "")
 		baseType.Fields["UPnPWANInterface"] = NewFieldInfo("UPnPWANInterface", "upnp_wan_interface", fields.String, "", true, false, true, "")
@@ -209,11 +318,20 @@ func NewResource(structName string, resourcePath string) *ResourceInfo {
 		baseType.Fields["Type"] = NewFieldInfo("Type", "type", fields.String, "", true, false, false, "")
 		baseType.Fields["InformIP"] = NewFieldInfo("InformIP", "inform_ip", fields.String, "", true, false, false, "")
 		baseType.Fields["IP"] = NewFieldInfo("IP", "ip", fields.String, "", true, false, false, "")
+	case resource.StructName == "PortProfile":
+		resource.FieldProcessor = clearNativeNetworkOmitEmpty
+		// Network 10.6.109 renamed ld_mode to ld_status in the field spec;
+		// retain ld_mode for pre-10.6.109 controllers. omitempty so a newer
+		// controller is not sent the old key unless a caller sets it.
+		baseType.Fields["LdMode"] = NewFieldInfo("LdMode", "ld_mode", fields.Bool, "", true, false, false, "")
 	case resource.StructName == "Client":
 		baseType.Fields[" DisplayName"] = NewFieldInfo("DisplayName", "display_name", fields.String, "non-generated field", true, false, false, "")
+		// The controller reports the client's most recent IP on /rest/user but
+		// ace.jar has no schema for it; surface it as a read-only field.
+		baseType.Fields["LastIP"] = NewFieldInfo("LastIP", "last_ip", fields.String, "non-generated field", true, false, false, "")
 	case resource.StructName == "WLAN":
 		// this field removed in v6, retaining for backwards compatibility
-		baseType.Fields["WLANGroupID"] = NewFieldInfo("WLANGroupID", "wlangroup_id", fields.String, "", false, false, false, "")
+		baseType.Fields["WLANGroupID"] = NewFieldInfo("WLANGroupID", "wlangroup_id", fields.String, "", true, false, false, "")
 	case resource.StructName == "BGPConfig":
 		resource.ResourcePath = "bgp/config"
 	}
@@ -335,47 +453,8 @@ func main() {
 
 	outDir := filepath.Join(wd, *outputDirFlag)
 
-	fieldsInfo, err := os.Stat(fieldsDir)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			panic(err)
-		}
-
-		err = os.MkdirAll(fieldsDir, 0o755)
-		if err != nil {
-			panic(err)
-		}
-
-		// download fields, create
-		jarFile, err := downloadJar(unifiDownloadUrl, fieldsDir)
-		if err != nil {
-			panic(err)
-		}
-
-		err = extractJSON(jarFile, fieldsDir)
-		if err != nil {
-			panic(err)
-		}
-
-		// defer func() {
-		// 	err = os.RemoveAll(fieldsDir)
-		// 	if err != nil {
-		// 		panic(err)
-		// 	}
-		// }()
-
-		err = copyCustom(fieldsDir)
-		if err != nil {
-			panic(err)
-		}
-
-		fieldsInfo, err = os.Stat(fieldsDir)
-		if err != nil {
-			panic(err)
-		}
-	}
-	if !fieldsInfo.IsDir() {
-		panic("version info isn't a directory")
+	if err := DownloadAndExtract(unifiDownloadUrl, fieldsDir); err != nil {
+		panic(err)
 	}
 
 	if *downloadOnly {
@@ -458,11 +537,48 @@ func main() {
 					// Field within DeviceRadioTable nested type
 					f.CustomUnmarshalType = "types.Number"
 					f.CustomUnmarshalFunc = "types.ToInt64Pointer"
+				case "Channel", "TxPower":
+					// String fields in DeviceRadioTable that newer controllers
+					// (UniFi 10.x) return as numbers; accept either form.
+					if f.FieldType == fields.String {
+						f.CustomUnmarshalType = fields.Number
+					}
+				// port_overrides is a full-replace array: a key the PUT leaves out resets
+				// to the controller default, and omitempty drops a plain false. Pointers
+				// keep an explicit false on the wire and let a decoded false survive the
+				// provider's merge (terraform-provider-unifi#567). These names occur only
+				// in DevicePortOverrides within Device.
+				case "Autoneg", "EeeEnabled", "EgressRateLimitKbpsEnabled", "FlowControlEnabled",
+					"FullDuplex", "Isolation", "LdMode", "LdStatus", "LinkDebounceAuto", "LldpmedEnabled",
+					"LldpmedNotifyEnabled", "PortKeepaliveEnabled", "PortSecurityEnabled",
+					"PrecisionTimeProtocolEnabled", "SdWANUnderlayPort", "StablePortEnabled",
+					"StormctrlBroadcastastEnabled", "StormctrlMcastEnabled", "StormctrlUcastEnabled",
+					"StpBpduGuardEnabled", "StpPortMode", "StpUplink":
+					f.IsPointer = true
 				}
 
 				f.OmitEmpty = true
 				switch name {
 				case "PortOverrides":
+					f.OmitEmpty = false
+				// config_network is a full replace on the controller: a key the
+				// PUT body leaves out is *deleted* from the stored object rather
+				// than left untouched. With omitempty, the ordinary values -
+				// bonding_enabled=false, an empty dns2 - are dropped from the body,
+				// so the controller removes them; they then read back as null and
+				// the apply fails with "inconsistent result after apply"
+				// (terraform-provider-unifi#542). Measured on a UCG-Fiber running
+				// Network 10.6.106: a config_network write without those two keys
+				// removed them from the stored object, and re-sending them
+				// explicitly restored it. The string fields carry the mirror
+				// hazard: clearing one by setting it to "" would be dropped and
+				// silently no-op, and the controller does accept an empty value
+				// for each of them (verified for gateway, which it stored as "").
+				// ip, netmask and type keep omitempty: a static config_network is
+				// rejected without them, and the provider never builds the object
+				// with one missing. These names occur only in DeviceConfigNetwork
+				// within Device, so matching the short name reaches nothing else.
+				case "BondingEnabled", "DNS1", "DNS2", "DNSsuffix", "Gateway":
 					f.OmitEmpty = false
 				}
 
@@ -476,11 +592,61 @@ func main() {
 						f.CustomUnmarshalType = "*bool"
 						f.CustomUnmarshalFunc = "emptyBoolToTrue"
 					}
+				case "DHCPDEnabled":
+					// Some controllers (UniFi Network 10.x) return "true"/"false"
+					// as JSON strings for this flag, which breaks a plain bool.
+					// Decode through the tolerant types.Bool. See
+					// terraform-provider-unifi #65.
+					if f.FieldType == fields.Bool {
+						f.CustomUnmarshalType = "*types.Bool"
+						f.CustomUnmarshalFunc = "boolValue"
+					}
 				case "IPSecEspLifetime", "IPSecIkeLifetime":
 					f.FieldType = fields.Int
 					f.IsPointer = true
 				case "WANDNS1", "WANDNS2", "WANIPV6DNS1", "WANIPV6DNS2", "DHCPDStart", "DHCPDStop", "DHCPDUnifiController",
 					"DHCPDTFTPServer", "DHCPDWins1", "DHCPDWins2", "DHCPDWPAdUrl", "DomainName", "DHCPDGateway", "DHCPDNtp1", "DHCPDNtp2":
+					f.OmitEmpty = true
+					f.IsPointer = true
+				case "DHCPDDNS1", "DHCPDDNS2", "DHCPDDNS3", "DHCPDDNS4":
+					// The 10.x spec dropped the IPv4 regex on dhcpd_dns_1/2
+					// but kept it on 3/4, which would leave the four slots
+					// with mixed shapes. Pin all four to the tri-state
+					// pointer contract used by the NTP/WINS/WAN DNS slots:
+					// nil = omit (preserve the controller value), pointer to
+					// "" = clear the slot, pointer to value = set it. A plain
+					// always-serialized string would put "" on the wire for
+					// every write that did not populate the slot, silently
+					// clearing DNS configured out of band.
+					f.OmitEmpty = true
+					f.IsPointer = true
+				case "WANUsername", "WANPassword":
+					// PPPoE credentials. Same tri-state contract as the DNS
+					// slots: nil omits the key so an update that does not
+					// manage them preserves the ISP login, a pointer sets it.
+					// A plain always-serialized string would put "" on the
+					// wire and clear the credentials, dropping the uplink.
+					f.OmitEmpty = true
+					f.IsPointer = true
+				case "AutoScaleEnabled", "LteLanEnabled":
+					// The controller stores no default for these: a network
+					// created without the key simply does not have it, while a
+					// network that was written once carries an explicit
+					// true/false (verified on Network 10.6.106 - a freshly
+					// created network has neither key, every pre-existing one
+					// has both). A plain always-serialized bool therefore puts
+					// false on the wire for every write that did not set them,
+					// turning auto-scaling and LTE-LAN off - or, with a
+					// provider-side default, on - behind the operator's back.
+					// Use the same tri-state pointer contract as the DNS slots
+					// above: nil = omit and preserve, pointer = set explicitly.
+					f.OmitEmpty = true
+					f.IsPointer = true
+				case "Enabled":
+					// The default LAN is stored without an enabled key, and the
+					// controller treats it as enabled. A plain bool reads that
+					// absent key as false. As a *bool, nil means absent and an
+					// update that leaves it nil does not send the key.
 					f.OmitEmpty = true
 					f.IsPointer = true
 				case "Purpose":
@@ -536,6 +702,17 @@ func main() {
 					f.IsPointer = true
 				case "DestinationFilter":
 					f.IsPointer = true
+				// The translated port and the filter ports are strings on
+				// the wire and may hold a range ("8080-8090"), which an
+				// *int64 cannot decode. Decode either wire form through
+				// types.Number.
+				case "Port":
+					f.FieldType = fields.String
+					f.IsPointer = false
+					f.OmitEmpty = true
+					f.FieldValidation = ""
+					f.CustomUnmarshalType = fields.Number
+					f.CustomUnmarshalFunc = ""
 				}
 				return nil
 			}
@@ -545,6 +722,11 @@ func main() {
 				case "Blocked":
 					f.FieldType = fields.Bool
 					f.IsPointer = true
+					// Some controllers return "true"/"false" as JSON strings
+					// for this flag, which breaks a plain *bool. Decode through
+					// the tolerant types.Bool. See terraform-provider-unifi #132.
+					f.CustomUnmarshalType = "*types.Bool"
+					f.CustomUnmarshalFunc = "boolPtrValue"
 				case "VirtualNetworkOverrideEnabled":
 					f.FieldType = fields.Bool
 					f.IsPointer = true
@@ -581,6 +763,23 @@ func main() {
 		if err != nil {
 			fmt.Printf("skipping file %s: %s", fieldsFile.Name(), err)
 			continue
+		}
+
+		// Add fields not present in the JAR schema to nested types.
+		if resource.StructName == "Device" {
+			if portOverrides, ok := resource.Types["DevicePortOverrides"]; ok {
+				portOverrides.Fields["TaggedNetworkIDs"] = NewFieldInfo("TaggedNetworkIDs", "tagged_networkconf_ids", fields.String, "", true, true, false, "")
+				// Network 10.6.109 renamed ld_mode to ld_status in the field spec;
+				// retain ld_mode for pre-10.6.109 controllers. A pointer like its
+				// siblings so a nil value is never written.
+				portOverrides.Fields["LdMode"] = NewFieldInfo("LdMode", "ld_mode", fields.Bool, "", true, false, true, "")
+				// lag_idx names the link aggregation group of an op_mode "aggregate"
+				// port. The field spec does not list it, but the controller stores it
+				// and needs it back: port_overrides is a full-replace array, and an
+				// aggregate port written without its lag_idx falls back to op_mode
+				// "switch", which tears the LAG down.
+				portOverrides.Fields["LagIdx"] = NewFieldInfo("LagIdx", "lag_idx", fields.Int, "[1-9]|[1-9][0-9]|^$", true, false, true, fields.Number)
+			}
 		}
 
 		// Add resource to specification generator
@@ -672,11 +871,13 @@ func (r *ResourceInfo) IsV2() bool {
 	return slices.Contains([]string{
 		"ApGroup",
 		"BGPConfig",
+		"ContentFiltering",
 		"DNSRecord",
 		"FirewallPolicy",
 		"FirewallZone",
 		"Nat",
 		"OSPFRouter",
+		"QOSRule",
 		"TrafficRoute",
 	}, r.StructName)
 }

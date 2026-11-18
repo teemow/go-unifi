@@ -24,9 +24,11 @@ var (
 type Mdns struct {
 	BaseSetting
 
-	CustomServices     []SettingMdnsCustomServices     `json:"custom_services,omitempty"`
-	Mode               string                          `json:"mode,omitempty"` // all|auto|custom
-	PredefinedServices []SettingMdnsPredefinedServices `json:"predefined_services,omitempty"`
+	CustomServices       []SettingMdnsCustomServices     `json:"custom_services,omitempty"`
+	EnabledFor           string                          `json:"enabled_for,omitempty"` // all|some|none
+	EnabledForNetworkIDs []string                        `json:"enabled_for_network_ids,omitempty"`
+	Mode                 string                          `json:"mode,omitempty"` // all|auto|custom
+	PredefinedServices   []SettingMdnsPredefinedServices `json:"predefined_services,omitempty"`
 }
 
 func (dst *Mdns) UnmarshalJSON(b []byte) error {
@@ -72,7 +74,7 @@ func (dst *SettingMdnsCustomServices) UnmarshalJSON(b []byte) error {
 }
 
 type SettingMdnsPredefinedServices struct {
-	Code string `json:"code,omitempty"` // amazon_devices|android_tv_remote|apple_airDrop|apple_airPlay|apple_file_sharing|apple_iChat|apple_iTunes|aqara|bose|dns_service_discovery|ftp_servers|google_chromecast|homeKit|matter_network|philips_hue|printers|roku|scanners|sonos|spotify_connect|ssh_servers|time_capsule|web_servers|windows_file_sharing_samba
+	Code string `json:"code,omitempty"` // amazon_devices|android_tv_remote|apple_airDrop|apple_airPlay|apple_file_sharing|apple_iChat|apple_iTunes|aqara|bose|dns_service_discovery|ftp_servers|google_chromecast|homeKit|matter_network|philips_hue|printers|roku|scanners|shelly|sonos|spotify_connect|ssh_servers|time_capsule|web_servers|windows_file_sharing_samba
 }
 
 func (dst *SettingMdnsPredefinedServices) UnmarshalJSON(b []byte) error {

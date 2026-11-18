@@ -2,6 +2,7 @@ package unifi
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -42,8 +43,8 @@ func TestMarshalNetworkCorporate(t *testing.T) {
 		SiteID:                "default",
 		Name:                  strPtr("Corporate LAN"),
 		Purpose:               PurposeCorporate,
-		Enabled:               true,
-		AutoScaleEnabled:      false,
+		Enabled:               boolPtr(true),
+		AutoScaleEnabled:      boolPtr(false),
 		NetworkGroup:          strPtr("LAN"),
 		IPSubnet:              strPtr("192.168.1.0/24"),
 		VLAN:                  &vlan,
@@ -59,8 +60,8 @@ func TestMarshalNetworkCorporate(t *testing.T) {
 		DHCPDStart:            &dhcpStart,
 		DHCPDStop:             &dhcpStop,
 		DHCPDLeaseTime:        &leasetime,
-		DHCPDDNS1:             "8.8.8.8",
-		DHCPDDNS2:             "8.8.4.4",
+		DHCPDDNS1:             strPtr("8.8.8.8"),
+		DHCPDDNS2:             strPtr("8.8.4.4"),
 		DHCPDDNSEnabled:       true,
 		IPAliases:             []string{},
 	}
@@ -136,7 +137,7 @@ func TestMarshalNetworkCorporateDefaults(t *testing.T) {
 	network := &Network{
 		ID:      "507f1f77bcf86cd799439011",
 		Purpose: PurposeCorporate,
-		Enabled: true,
+		Enabled: boolPtr(true),
 	}
 
 	data, err := json.Marshal(network)
@@ -167,6 +168,67 @@ func TestMarshalNetworkCorporateDefaults(t *testing.T) {
 	}
 }
 
+// TestMarshalNetworkAutoScaleLteLanOmitted pins the tri-state contract for
+// auto_scale_enabled and lte_lan_enabled. The controller stores no default for
+// either: a network created without the key simply does not have it, while one
+// written even once carries an explicit true/false (verified on Network
+// 10.6.106 - a freshly created network has neither key, every pre-existing one
+// has both). An always-serialized bool therefore put false on the wire for
+// every caller that left them unset, silently turning the features off.
+func TestMarshalNetworkAutoScaleLteLanOmitted(t *testing.T) {
+	for _, purpose := range []string{PurposeCorporate, PurposeGuest} {
+		t.Run(purpose, func(t *testing.T) {
+			unset := &Network{
+				ID:      "507f1f77bcf86cd799439011",
+				Purpose: purpose,
+				Enabled: boolPtr(true),
+			}
+			data, err := json.Marshal(unset)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for _, key := range []string{"auto_scale_enabled", "lte_lan_enabled"} {
+				if _, present := result[key]; present {
+					t.Errorf("unset %s must stay off the wire, got %v", key, result[key])
+				}
+			}
+
+			// An explicit value still travels, in both directions.
+			for _, want := range []bool{true, false} {
+				set := &Network{
+					ID:               "507f1f77bcf86cd799439011",
+					Purpose:          purpose,
+					Enabled:          boolPtr(true),
+					AutoScaleEnabled: boolPtr(want),
+					LteLanEnabled:    boolPtr(want),
+				}
+				data, err := json.Marshal(set)
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				result = map[string]any{}
+				if err := json.Unmarshal(data, &result); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				for _, key := range []string{"auto_scale_enabled", "lte_lan_enabled"} {
+					got, present := result[key]
+					if !present {
+						t.Errorf("explicit %s=%v must be sent, key absent", key, want)
+						continue
+					}
+					if got != want {
+						t.Errorf("%s = %v, want %v", key, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestMarshalNetworkWAN(t *testing.T) {
 	vlan := int64(20)
 	failoverPriority := int64(1)
@@ -178,7 +240,7 @@ func TestMarshalNetworkWAN(t *testing.T) {
 		SiteID:                "default",
 		Name:                  strPtr("WAN"),
 		Purpose:               PurposeWAN,
-		Enabled:               true,
+		Enabled:               boolPtr(true),
 		WANType:               strPtr("dhcp"),
 		WANTypeV6:             strPtr("dhcpv6"),
 		WANNetworkGroup:       strPtr("WAN"),
@@ -259,11 +321,197 @@ func TestMarshalNetworkWAN(t *testing.T) {
 	}
 }
 
+// TestMarshalNetworkWANPPPoECredentials pins the tri-state contract for the
+// PPPoE login. The fields were previously absent from the WAN payload
+// altogether, which made the credentials unmanageable; they must now travel
+// when set, and stay off the wire when not, so an update that manages only
+// other WAN settings cannot clear the ISP login and drop the uplink.
+func TestMarshalNetworkWANPPPoECredentials(t *testing.T) {
+	t.Run("unset stays off the wire", func(t *testing.T) {
+		network := &Network{
+			ID:      "507f1f77bcf86cd799439011",
+			Purpose: PurposeWAN,
+			Enabled: boolPtr(true),
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, key := range []string{"wan_username", "x_wan_password"} {
+			if _, present := result[key]; present {
+				t.Errorf("unset %s must stay off the wire, got %v", key, result[key])
+			}
+		}
+	})
+
+	t.Run("configured credentials travel", func(t *testing.T) {
+		network := &Network{
+			ID:          "507f1f77bcf86cd799439011",
+			Purpose:     PurposeWAN,
+			Enabled:     boolPtr(true),
+			WANType:     strPtr("pppoe"),
+			WANUsername: strPtr("isp-user"),
+			WANPassword: strPtr("isp-secret"),
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if result["wan_username"] != "isp-user" {
+			t.Errorf("wan_username = %v, want isp-user", result["wan_username"])
+		}
+		if result["x_wan_password"] != "isp-secret" {
+			t.Errorf("x_wan_password = %v, want isp-secret", result["x_wan_password"])
+		}
+	})
+
+	t.Run("an explicitly empty credential can still clear it", func(t *testing.T) {
+		network := &Network{
+			ID:          "507f1f77bcf86cd799439011",
+			Purpose:     PurposeWAN,
+			Enabled:     boolPtr(true),
+			WANUsername: strPtr(""),
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		// omitempty on a *string only drops a nil pointer, not a pointer to "".
+		got, present := result["wan_username"]
+		if !present || got != "" {
+			t.Errorf(`wan_username = %v (present=%v), want an explicit ""`, got, present)
+		}
+	})
+}
+
+// TestMarshalNetworkSiteVPNIKEIdentifiers pins the IKE identifier contract.
+// marshalSiteVPN previously carried none of these fields, so they could not be
+// managed at all; now that they travel, an unset identifier must stay off the
+// wire - a false on ipsec_local_identifier_enabled would turn identifier
+// authentication off on a live tunnel that relies on it.
+func TestMarshalNetworkSiteVPNIKEIdentifiers(t *testing.T) {
+	t.Run("unset identifiers stay off the wire", func(t *testing.T) {
+		network := &Network{
+			ID:      "507f1f77bcf86cd799439011",
+			Purpose: PurposeSiteVPN,
+			Enabled: boolPtr(true),
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for _, key := range []string{
+			"ipsec_local_identifier",
+			"ipsec_local_identifier_enabled",
+			"ipsec_remote_identifier",
+			"ipsec_remote_identifier_enabled",
+		} {
+			if _, present := result[key]; present {
+				t.Errorf("unset %s must stay off the wire, got %v", key, result[key])
+			}
+		}
+	})
+
+	t.Run("configured identifiers travel", func(t *testing.T) {
+		network := &Network{
+			ID:                           "507f1f77bcf86cd799439011",
+			Purpose:                      PurposeSiteVPN,
+			Enabled:                      boolPtr(true),
+			IPSecLocalIDentifier:         strPtr("local.example.com"),
+			IPSecLocalIDentifierEnabled:  true,
+			IPSecRemoteIDentifier:        strPtr("remote.example.com"),
+			IPSecRemoteIDentifierEnabled: true,
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		for key, want := range map[string]any{
+			"ipsec_local_identifier":          "local.example.com",
+			"ipsec_local_identifier_enabled":  true,
+			"ipsec_remote_identifier":         "remote.example.com",
+			"ipsec_remote_identifier_enabled": true,
+		} {
+			if result[key] != want {
+				t.Errorf("%s = %v, want %v", key, result[key], want)
+			}
+		}
+	})
+
+	t.Run("a hostname peer is carried verbatim", func(t *testing.T) {
+		// ipsec_peer_ip is *string on the API: the controller stores whatever
+		// the UI accepted, including a dynamic-DNS hostname.
+		network := &Network{
+			ID:          "507f1f77bcf86cd799439011",
+			Purpose:     PurposeSiteVPN,
+			Enabled:     boolPtr(true),
+			IPSecPeerIP: strPtr("peer.dyndns.example"),
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if result["ipsec_peer_ip"] != "peer.dyndns.example" {
+			t.Errorf("ipsec_peer_ip = %v, want the hostname verbatim", result["ipsec_peer_ip"])
+		}
+	})
+
+	t.Run("ipsec_tunnel_ip is carried verbatim", func(t *testing.T) {
+		// ipsec_tunnel_ip is *string on the API: the controller stores whatever
+		// the UI accepted, including a literal IP address with CIDR notation.
+		network := &Network{
+			ID:                   "507f1f77bcf86cd799439011",
+			Purpose:              PurposeSiteVPN,
+			Enabled:              boolPtr(true),
+			IPSecTunnelIP:        strPtr("169.254.21.1/30"),
+			IPSecTunnelIPEnabled: true,
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if result["ipsec_tunnel_ip"] != "169.254.21.1/30" {
+			t.Errorf("ipsec_tunnel_ip = %v, want %v", result["ipsec_tunnel_ip"], "169.254.21.1/30")
+		}
+		if result["ipsec_tunnel_ip_enabled"] != true {
+			t.Errorf("ipsec_tunnel_ip_enabled = %v, want %v", result["ipsec_tunnel_ip_enabled"], true)
+		}
+	})
+}
+
 func TestMarshalNetworkUnknownPurpose(t *testing.T) {
 	network := &Network{
 		ID:      "507f1f77bcf86cd799439016",
 		Purpose: "unknown-purpose",
-		Enabled: true,
+		Enabled: boolPtr(true),
 	}
 
 	_, err := json.Marshal(network)
@@ -361,7 +609,7 @@ func TestMarshalNetworkGuest(t *testing.T) {
 		SiteID:                "default",
 		Name:                  strPtr("Guest Network"),
 		Purpose:               PurposeGuest,
-		Enabled:               true,
+		Enabled:               boolPtr(true),
 		NetworkGroup:          strPtr("LAN"),
 		IPSubnet:              strPtr("192.168.100.0/24"),
 		VLAN:                  &vlan,
@@ -372,7 +620,7 @@ func TestMarshalNetworkGuest(t *testing.T) {
 		DHCPDStop:             &dhcpStop,
 		DHCPDLeaseTime:        &leasetime,
 		DHCPDDNSEnabled:       true,
-		DHCPDDNS1:             "8.8.8.8",
+		DHCPDDNS1:             strPtr("8.8.8.8"),
 	}
 
 	data, err := json.Marshal(network)
@@ -423,7 +671,559 @@ func TestMarshalNetworkGuest(t *testing.T) {
 	}
 }
 
+// TestMarshalNetworkIPv6ClientAddressAssignment guards that the corporate and
+// guest marshalers emit ipv6_client_address_assignment when set, and omit it
+// when nil. The field lives on the generated Network struct but the marshalers
+// only serialize a curated subset, so it would otherwise be silently dropped on
+// write (ubiquiti-community/terraform-provider-unifi#232).
+func TestMarshalNetworkIPv6ClientAddressAssignment(t *testing.T) {
+	for _, purpose := range []string{PurposeCorporate, PurposeGuest} {
+		t.Run(purpose, func(t *testing.T) {
+			// Set => emitted with the configured value.
+			network := &Network{
+				ID:                          "507f1f77bcf86cd799439011",
+				Purpose:                     purpose,
+				Enabled:                     boolPtr(true),
+				IPV6InterfaceType:           strPtr("static"),
+				IPV6ClientAddressAssignment: strPtr("slaac-dhcpv6"),
+			}
+			data, err := json.Marshal(network)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := result["ipv6_client_address_assignment"]; got != "slaac-dhcpv6" {
+				t.Errorf("ipv6_client_address_assignment = %v, want slaac-dhcpv6", got)
+			}
+
+			// Unset => omitted (omitempty), no perpetual diff against the API.
+			data, err = json.Marshal(&Network{ID: "x", Purpose: purpose, Enabled: boolPtr(true)})
+			if err != nil {
+				t.Fatalf("marshal (unset): %v", err)
+			}
+			result = map[string]any{}
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("unmarshal (unset): %v", err)
+			}
+			if _, ok := result["ipv6_client_address_assignment"]; ok {
+				t.Errorf("ipv6_client_address_assignment serialized for nil value: %s", data)
+			}
+		})
+	}
+}
+
+// TestMarshalNetworkIPv6Aliases guards that the corporate and guest marshalers
+// carry ipv6_aliases: a nil slice is omitted so the controller keeps its
+// aliases, an empty slice is sent as [] to clear them, and a list is sent as
+// is (ubiquiti-community/terraform-provider-unifi#699).
+func TestMarshalNetworkIPv6Aliases(t *testing.T) {
+	for _, purpose := range []string{PurposeCorporate, PurposeGuest} {
+		for _, tc := range []struct {
+			name    string
+			aliases []string
+			want    any
+		}{
+			{"nil is omitted", nil, nil},
+			{"empty clears", []string{}, []any{}},
+			{"list is sent", []string{"fd7a:6c9e:4b28:4::1/64"}, []any{"fd7a:6c9e:4b28:4::1/64"}},
+		} {
+			t.Run(purpose+"/"+tc.name, func(t *testing.T) {
+				data, err := json.Marshal(&Network{
+					ID:          "x",
+					Purpose:     purpose,
+					Enabled:     boolPtr(true),
+					IPV6Aliases: tc.aliases,
+				})
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				var result map[string]any
+				if err := json.Unmarshal(data, &result); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				got, ok := result["ipv6_aliases"]
+				if tc.want == nil {
+					if ok {
+						t.Errorf("ipv6_aliases serialized for a nil slice: %s", data)
+					}
+					return
+				}
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("ipv6_aliases = %#v, want %#v", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// TestMarshalNetworkSiteVPN guards that the site-to-site IPsec VPN marshaler
+// emits the VPN/IPsec fields (not just name/purpose/enabled). It was previously
+// a stub, which silently dropped the whole tunnel configuration on write
+// (ubiquiti-community/terraform-provider-unifi#78).
+func TestMarshalNetworkSiteVPN(t *testing.T) {
+	dh := int64(14)
+	network := &Network{
+		ID:                 "507f1f77bcf86cd799439011",
+		Name:               strPtr("HQ-to-Branch"),
+		Purpose:            PurposeSiteVPN,
+		Enabled:            boolPtr(true),
+		VPNType:            strPtr("ipsec-vpn"),
+		IPSecInterface:     strPtr("wan"),
+		IPSecPeerIP:        strPtr("203.0.113.9"),
+		IPSecKeyExchange:   strPtr("ikev2"),
+		IPSecPreSharedKey:  strPtr("s3cret-psk"),
+		IPSecProfile:       strPtr("customized"),
+		IPSecIkeEncryption: strPtr("aes256"),
+		IPSecIkeHash:       strPtr("sha256"),
+		IPSecDhGroup:       &dh,
+		IPSecPfs:           true,
+		RemoteVPNSubnets:   []string{"192.0.2.0/24", "198.51.100.0/24"},
+	}
+
+	data, err := json.Marshal(network)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	checkJSONFields(t, data, []string{
+		"name", "purpose", "enabled", "vpn_type", "ipsec_interface",
+		"ipsec_peer_ip", "ipsec_key_exchange", "x_ipsec_pre_shared_key",
+		"ipsec_profile", "ipsec_ike_encryption", "ipsec_ike_hash", "ipsec_dh_group",
+		"ipsec_pfs", "remote_vpn_subnets",
+	}, []string{"ip_subnet", "dhcpd_enabled", "vlan"})
+
+	if result["purpose"] != PurposeSiteVPN {
+		t.Errorf("purpose = %v, want %q", result["purpose"], PurposeSiteVPN)
+	}
+	if result["vpn_type"] != "ipsec-vpn" {
+		t.Errorf("vpn_type = %v, want ipsec-vpn", result["vpn_type"])
+	}
+	if result["x_ipsec_pre_shared_key"] != "s3cret-psk" {
+		t.Errorf("x_ipsec_pre_shared_key = %v", result["x_ipsec_pre_shared_key"])
+	}
+	subnets, ok := result["remote_vpn_subnets"].([]any)
+	if !ok || len(subnets) != 2 {
+		t.Errorf("remote_vpn_subnets = %v, want 2 entries", result["remote_vpn_subnets"])
+	}
+}
+
 // Helper function to create string pointers.
+func boolPtr(b bool) *bool {
+	return &b
+}
+
 func strPtr(s string) *string {
 	return &s
+}
+
+// Corporate and guest networks previously emitted dhcpguard_enabled without
+// dhcpd_ip_1..3, so enabling DHCP guarding failed with api.err.MissingIPAddress
+// and any update cleared the trusted servers on the controller. VLAN-only
+// networks already carried the fields.
+func TestMarshalNetworkDHCPGuarding(t *testing.T) {
+	for _, purpose := range []string{PurposeCorporate, PurposeGuest} {
+		t.Run(purpose, func(t *testing.T) {
+			network := &Network{
+				ID:               "507f1f77bcf86cd799439011",
+				Name:             strPtr("Guarded"),
+				Purpose:          purpose,
+				IPSubnet:         strPtr("192.168.1.0/24"),
+				DHCPguardEnabled: true,
+				DHCPDIP1:         "192.168.1.1",
+				DHCPDIP2:         "192.168.1.2",
+			}
+
+			data, err := json.Marshal(network)
+			if err != nil {
+				t.Fatalf("Failed to marshal network: %v", err)
+			}
+
+			checkJSONFields(
+				t,
+				data,
+				[]string{"dhcpguard_enabled", "dhcpd_ip_1", "dhcpd_ip_2", "dhcpd_ip_3"},
+				nil,
+			)
+
+			var result map[string]any
+			json.Unmarshal(data, &result)
+			if result["dhcpguard_enabled"] != true {
+				t.Errorf("Expected dhcpguard_enabled true, got %v", result["dhcpguard_enabled"])
+			}
+			if result["dhcpd_ip_1"] != "192.168.1.1" {
+				t.Errorf("Expected dhcpd_ip_1 '192.168.1.1', got %v", result["dhcpd_ip_1"])
+			}
+			if result["dhcpd_ip_2"] != "192.168.1.2" {
+				t.Errorf("Expected dhcpd_ip_2 '192.168.1.2', got %v", result["dhcpd_ip_2"])
+			}
+		})
+	}
+}
+
+// marshalCorporate previously populated dhcp_relay_servers from
+// RemoteVPNSubnets, so configured relay servers never reached the controller
+// and remote VPN subnets leaked into the field. The guest path was correct.
+func TestMarshalNetworkDHCPRelayServers(t *testing.T) {
+	for _, purpose := range []string{PurposeCorporate, PurposeGuest} {
+		t.Run(purpose, func(t *testing.T) {
+			network := &Network{
+				ID:               "507f1f77bcf86cd799439011",
+				Name:             strPtr("Relayed"),
+				Purpose:          purpose,
+				IPSubnet:         strPtr("192.168.1.0/24"),
+				DHCPRelayEnabled: true,
+				DHCPRelayServers: []string{"192.168.1.5", "192.168.1.6"},
+				RemoteVPNSubnets: []string{"10.0.0.0/24"},
+			}
+
+			data, err := json.Marshal(network)
+			if err != nil {
+				t.Fatalf("Failed to marshal network: %v", err)
+			}
+
+			var result map[string]any
+			json.Unmarshal(data, &result)
+
+			servers, ok := result["dhcp_relay_servers"].([]any)
+			if !ok {
+				t.Fatalf(
+					"Expected dhcp_relay_servers to be a list, got %T",
+					result["dhcp_relay_servers"],
+				)
+			}
+			if len(servers) != 2 || servers[0] != "192.168.1.5" || servers[1] != "192.168.1.6" {
+				t.Errorf("Expected dhcp_relay_servers [192.168.1.5 192.168.1.6], got %v", servers)
+			}
+		})
+	}
+}
+
+// dhcpd_dns_1..4 and dhcpd_ntp_1/2 follow the same tri-state pointer
+// contract: nil stays off the wire (the controller's networkconf PUT keeps
+// omitted fields, so out-of-band config is preserved), a pointer to ""
+// serializes as "" and clears the slot (terraform-provider-unifi#429), and a
+// pointer to a value sets it. An always-serialized DNS slot would put "" on
+// the wire for every write that did not populate it, silently clearing DNS
+// configured outside the caller.
+func TestMarshalNetworkDNSNtpClear(t *testing.T) {
+	for _, purpose := range []string{PurposeCorporate, PurposeGuest} {
+		t.Run(purpose, func(t *testing.T) {
+			emptyNtp := ""
+			network := &Network{
+				ID:        "507f1f77bcf86cd799439011",
+				Name:      strPtr("Clearing"),
+				Purpose:   purpose,
+				IPSubnet:  strPtr("192.168.1.0/24"),
+				DHCPDDNS1: strPtr(""),
+				DHCPDDNS2: strPtr(""),
+				DHCPDDNS3: strPtr(""),
+				DHCPDDNS4: nil,
+				DHCPDNtp1: &emptyNtp,
+				DHCPDNtp2: nil,
+			}
+
+			data, err := json.Marshal(network)
+			if err != nil {
+				t.Fatalf("Failed to marshal network: %v", err)
+			}
+
+			checkJSONFields(
+				t,
+				data,
+				[]string{
+					"dhcpd_dns_1", "dhcpd_dns_2", "dhcpd_dns_3",
+					"dhcpd_ntp_1",
+				},
+				[]string{"dhcpd_dns_4", "dhcpd_ntp_2"},
+			)
+
+			var result map[string]any
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("Failed to unmarshal JSON: %v", err)
+			}
+			for _, f := range []string{"dhcpd_dns_1", "dhcpd_dns_2", "dhcpd_dns_3", "dhcpd_ntp_1"} {
+				if result[f] != "" {
+					t.Errorf("Expected %s to be an empty string, got %v", f, result[f])
+				}
+			}
+		})
+	}
+}
+
+// Corporate and guest networks previously dropped firewall_zone_id, so a zone
+// assignment never reached the controller (terraform-provider-unifi#605).
+func TestMarshalNetworkFirewallZoneID(t *testing.T) {
+	for _, purpose := range []string{PurposeCorporate, PurposeGuest} {
+		t.Run(purpose, func(t *testing.T) {
+			network := &Network{
+				ID:             "507f1f77bcf86cd799439011",
+				Name:           strPtr("Zoned"),
+				Purpose:        purpose,
+				IPSubnet:       strPtr("192.168.1.0/24"),
+				FirewallZoneID: strPtr("677fd1b2c3d4e5f6a7b8c9d0"),
+			}
+
+			data, err := json.Marshal(network)
+			if err != nil {
+				t.Fatalf("Failed to marshal network: %v", err)
+			}
+
+			checkJSONFields(t, data, []string{"firewall_zone_id"}, nil)
+
+			var result map[string]any
+			json.Unmarshal(data, &result)
+			if result["firewall_zone_id"] != "677fd1b2c3d4e5f6a7b8c9d0" {
+				t.Errorf("Expected firewall_zone_id '677fd1b2c3d4e5f6a7b8c9d0', got %v", result["firewall_zone_id"])
+			}
+		})
+
+		t.Run(purpose+"/unset", func(t *testing.T) {
+			network := &Network{
+				Name:     strPtr("Unzoned"),
+				Purpose:  purpose,
+				IPSubnet: strPtr("192.168.1.0/24"),
+			}
+
+			data, err := json.Marshal(network)
+			if err != nil {
+				t.Fatalf("Failed to marshal network: %v", err)
+			}
+
+			checkJSONFields(t, data, nil, []string{"firewall_zone_id"})
+		})
+	}
+}
+
+// A WireGuard server's IPv6 subnet and listening family reach the wire: the
+// controller only takes ipv6_subnet when the server is created, so a create
+// without it makes an IPv4-only server.
+func TestMarshalNetworkUserVPNWireGuardIPv6(t *testing.T) {
+	name := "wg"
+	subnet := "192.0.2.1/24"
+	subnet6 := "fd00:db8::1/64"
+	vpnType := "wireguard-server"
+	ipVersion := "v6"
+	network := &Network{
+		Name:                                   &name,
+		Purpose:                                PurposeUserVPN,
+		Enabled:                                boolPtr(true),
+		IPSubnet:                               &subnet,
+		IPV6Subnet:                             &subnet6,
+		VPNType:                                &vpnType,
+		WireguardInterfaceBindingModeIPVersion: &ipVersion,
+	}
+	data, err := json.Marshal(network)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Failed to unmarshal JSON: %v", err)
+	}
+	if got["ipv6_subnet"] != subnet6 {
+		t.Errorf("ipv6_subnet = %v, want %s", got["ipv6_subnet"], subnet6)
+	}
+	if got["wireguard_interface_binding_mode_ip_version"] != ipVersion {
+		t.Errorf("wireguard_interface_binding_mode_ip_version = %v, want %s",
+			got["wireguard_interface_binding_mode_ip_version"], ipVersion)
+	}
+
+	// Without one, the field stays off the wire.
+	network.IPV6Subnet = nil
+	data, err = json.Marshal(network)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	checkJSONFields(t, data, []string{"ip_subnet"}, []string{"ipv6_subnet"})
+}
+
+func TestMarshalNetworkSiteVPNDynamicSubnets(t *testing.T) {
+	t.Run("remote_vpn_dynamic_subnets_enabled is carried verbatim", func(t *testing.T) {
+		// remote_vpn_dynamic_subnets_enabled is a boolean on the API: the controller stores whatever
+		// the UI accepted.
+		network := &Network{
+			ID:                             "507f1f77bcf86cd799439011",
+			Purpose:                        PurposeSiteVPN,
+			Enabled:                        boolPtr(true),
+			RemoteVPNDynamicSubnetsEnabled: true,
+		}
+		data, err := json.Marshal(network)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var result map[string]any
+		if err := json.Unmarshal(data, &result); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if result["remote_vpn_dynamic_subnets_enabled"] != true {
+			t.Errorf("remote_vpn_dynamic_subnets_enabled = %v, want %v", result["remote_vpn_dynamic_subnets_enabled"], true)
+		}
+	})
+}
+
+// The default LAN is stored without an enabled key, and the controller treats
+// it as enabled. Decoding must keep absent apart from an explicit false.
+func TestUnmarshalNetworkEnabledKeepsAbsent(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want *bool
+	}{
+		{"absent", `{"_id":"x","purpose":"corporate"}`, nil},
+		{"false", `{"_id":"x","purpose":"corporate","enabled":false}`, boolPtr(false)},
+		{"true", `{"_id":"x","purpose":"corporate","enabled":true}`, boolPtr(true)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var n Network
+			if err := json.Unmarshal([]byte(tc.doc), &n); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			switch {
+			case tc.want == nil && n.Enabled != nil:
+				t.Errorf("Enabled = %v, want nil", *n.Enabled)
+			case tc.want != nil && n.Enabled == nil:
+				t.Errorf("Enabled = nil, want %v", *tc.want)
+			case tc.want != nil && *n.Enabled != *tc.want:
+				t.Errorf("Enabled = %v, want %v", *n.Enabled, *tc.want)
+			}
+		})
+	}
+}
+
+// A nil Enabled leaves the key out of the body, so an update does not
+// overwrite the stored value. VLAN-only networks always send enabled=true.
+func TestMarshalNetworkEnabledNilOmitted(t *testing.T) {
+	purposes := []string{
+		PurposeCorporate, PurposeGuest, PurposeWAN,
+		PurposeSiteVPN, PurposeVPNClient, PurposeUserVPN,
+	}
+	for _, purpose := range purposes {
+		t.Run(purpose, func(t *testing.T) {
+			data, err := json.Marshal(&Network{ID: "x", Purpose: purpose})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got, present := result["enabled"]; present {
+				t.Errorf("nil Enabled must stay off the wire, got %v", got)
+			}
+
+			for _, want := range []bool{true, false} {
+				data, err := json.Marshal(&Network{ID: "x", Purpose: purpose, Enabled: boolPtr(want)})
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				result = map[string]any{}
+				if err := json.Unmarshal(data, &result); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if got := result["enabled"]; got != want {
+					t.Errorf("enabled = %v, want %v", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestMarshalNetworkWANInterfaceMTU pins the MTU fields of the WAN payload.
+// marshalWAN previously dropped them, so an MTU override could not be managed.
+func TestMarshalNetworkWANInterfaceMTU(t *testing.T) {
+	tests := []struct {
+		name        string
+		mtu         *int64
+		enabled     bool
+		wantMTU     any
+		wantEnabled any
+	}{
+		{name: "unmanaged stays off the wire"},
+		{name: "override on", mtu: Ptr[int64](1492), enabled: true, wantMTU: float64(1492), wantEnabled: true},
+		{name: "override off with mtu set", mtu: Ptr[int64](1500), wantMTU: float64(1500), wantEnabled: false},
+		{name: "enabled without mtu", enabled: true, wantEnabled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(&Network{
+				ID:                  "x",
+				Purpose:             PurposeWAN,
+				InterfaceMtu:        tt.mtu,
+				InterfaceMtuEnabled: tt.enabled,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for key, want := range map[string]any{
+				"interface_mtu":         tt.wantMTU,
+				"interface_mtu_enabled": tt.wantEnabled,
+			} {
+				got, present := result[key]
+				if want == nil {
+					if present {
+						t.Errorf("%s must stay off the wire, got %v", key, got)
+					}
+					continue
+				}
+				if got != want {
+					t.Errorf("%s = %v (present=%v), want %v", key, got, present, want)
+				}
+			}
+		})
+	}
+}
+
+// TestMarshalNetworkWANIGMPProxyDownstream pins the tri-state contract for
+// igmp_proxy_downstream_networkconf_ids, which marshalWAN previously dropped:
+// nil stays off the wire, a list travels, and an empty list is sent as [].
+func TestMarshalNetworkWANIGMPProxyDownstream(t *testing.T) {
+	const key = "igmp_proxy_downstream_networkconf_ids"
+	tests := []struct {
+		name string
+		ids  []string
+		want any
+	}{
+		{name: "nil stays off the wire"},
+		{name: "list travels", ids: []string{"lan1", "lan2"}, want: []any{"lan1", "lan2"}},
+		{name: "empty list clears", ids: []string{}, want: []any{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(&Network{
+				ID:                            "x",
+				Purpose:                       PurposeWAN,
+				IGMPProxyFor:                  Ptr("some"),
+				IGMPProxyDownstreamNetworkIDs: tt.ids,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var result map[string]any
+			if err := json.Unmarshal(data, &result); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, present := result[key]
+			if tt.want == nil {
+				if present {
+					t.Errorf("%s must stay off the wire, got %v", key, got)
+				}
+				return
+			}
+			if !present || !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("%s = %v (present=%v), want %v", key, got, present, tt.want)
+			}
+		})
+	}
 }

@@ -1,31 +1,110 @@
 package unifi
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"net/http"
+)
 
-func (c *ApiClient) ListWireGuardPeer(ctx context.Context, site string) ([]WireGuardPeer, error) {
-	return c.listWireGuardPeer(ctx, site)
+// This is a v2 API object, manually coded.
+//
+// WireGuard peers ("clients" in the UI) of a WireGuard server network
+// (vpn_type=wireguard-server). The controller only exposes batch
+// create/update/delete endpoints, so single-peer CRUD wraps those.
+
+type WireGuardPeer struct {
+	ID        string `json:"_id,omitempty"`
+	NetworkID string `json:"network_id,omitempty"`
+
+	Name        string   `json:"name"`
+	InterfaceIP string   `json:"interface_ip"`
+	PublicKey   string   `json:"public_key"`
+	AllowedIPs  []string `json:"allowed_ips"`
+
+	InterfaceIPv6 *string `json:"interface_ipv6,omitempty"`
+
+	// PresharedKey is the optional WireGuard pre-shared key (the UI's
+	// "Pre-Shared Key" toggle). The controller stores and returns it in clear
+	// text, and omits the field entirely when the peer has none.
+	//
+	// A pointer with omitempty because the peer endpoints are full replaces: a
+	// nil omits the key and preserves whatever the controller holds, while a
+	// plain string would send "" on every write. Verified on Network 10.6.106
+	// that a PUT without the field destroys a stored key, so the distinction
+	// is load-bearing rather than cosmetic.
+	PresharedKey *string `json:"preshared_key,omitempty"`
 }
 
-func (c *ApiClient) GetWireGuardPeer(ctx context.Context, site, id string) (*WireGuardPeer, error) {
-	return c.getWireGuardPeer(ctx, site, id)
+func (c *ApiClient) wireGuardPeersPath(site, networkID string) string {
+	return fmt.Sprintf("v2/api/site/%s/wireguard/%s/users", site, networkID)
 }
 
-func (c *ApiClient) DeleteWireGuardPeer(ctx context.Context, site, id string) error {
-	return c.deleteWireGuardPeer(ctx, site, id)
+func (c *ApiClient) ListWireGuardPeers(ctx context.Context, site, networkID string) ([]WireGuardPeer, error) {
+	var respBody []WireGuardPeer
+
+	err := c.do(ctx, http.MethodGet, c.wireGuardPeersPath(site, networkID), nil, &respBody,
+		map[string]string{"networkId": networkID})
+	if err != nil {
+		return nil, err
+	}
+
+	return respBody, nil
 }
 
-func (c *ApiClient) CreateWireGuardPeer(
-	ctx context.Context,
-	site string,
-	d *WireGuardPeer,
-) (*WireGuardPeer, error) {
-	return c.createWireGuardPeer(ctx, site, d)
+// GetWireGuardPeer fetches a single peer by ID. The controller has no
+// single-peer endpoint, so this lists and filters.
+func (c *ApiClient) GetWireGuardPeer(ctx context.Context, site, networkID, id string) (*WireGuardPeer, error) {
+	peers, err := c.ListWireGuardPeers(ctx, site, networkID)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range peers {
+		if peers[i].ID == id {
+			return &peers[i], nil
+		}
+	}
+
+	return nil, &NotFoundError{Type: "wireguard_peer", Attr: "_id", Value: id}
 }
 
-func (c *ApiClient) UpdateWireGuardPeer(
-	ctx context.Context,
-	site string,
-	d *WireGuardPeer,
-) (*WireGuardPeer, error) {
-	return c.updateWireGuardPeer(ctx, site, d)
+func (c *ApiClient) CreateWireGuardPeer(ctx context.Context, site, networkID string, d *WireGuardPeer) (*WireGuardPeer, error) {
+	var respBody []WireGuardPeer
+	d.ID = ""
+	if d.AllowedIPs == nil {
+		d.AllowedIPs = []string{}
+	}
+
+	err := c.do(ctx, http.MethodPost, c.wireGuardPeersPath(site, networkID)+"/batch", []*WireGuardPeer{d}, &respBody)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(respBody) != 1 {
+		return nil, &NotFoundError{Type: "wireguard_peer"}
+	}
+
+	return &respBody[0], nil
+}
+
+func (c *ApiClient) UpdateWireGuardPeer(ctx context.Context, site, networkID string, d *WireGuardPeer) (*WireGuardPeer, error) {
+	var respBody []WireGuardPeer
+	if d.AllowedIPs == nil {
+		d.AllowedIPs = []string{}
+	}
+
+	err := c.do(ctx, http.MethodPut, c.wireGuardPeersPath(site, networkID)+"/batch", []*WireGuardPeer{d}, &respBody)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(respBody) != 1 {
+		return nil, &NotFoundError{Type: "wireguard_peer", Attr: "_id", Value: d.ID}
+	}
+
+	return &respBody[0], nil
+}
+
+func (c *ApiClient) DeleteWireGuardPeer(ctx context.Context, site, networkID, id string) error {
+	return c.do(ctx, http.MethodPost, c.wireGuardPeersPath(site, networkID)+"/batch_delete", []string{id}, nil)
 }
