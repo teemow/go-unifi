@@ -62,21 +62,25 @@ func (n *Network) marshalCorporate() ([]byte, error) {
 
 		Name                    *string                         `json:"name,omitempty"`
 		Purpose                 string                          `json:"purpose"`
-		Enabled                 bool                            `json:"enabled"`
+		Enabled                 *bool                           `json:"enabled,omitempty"`
 		NetworkGroup            *string                         `json:"networkgroup,omitempty"`
 		IPSubnet                *string                         `json:"ip_subnet,omitempty"`
 		VLAN                    *int64                          `json:"vlan,omitempty"`
 		VLANEnabled             bool                            `json:"vlan_enabled"`
 		DomainName              *string                         `json:"domain_name,omitempty"`
-		AutoScaleEnabled        bool                            `json:"auto_scale_enabled"`
+		AutoScaleEnabled        *bool                           `json:"auto_scale_enabled,omitempty"`
 		GatewayType             *string                         `json:"gateway_type,omitempty"`
 		InternetAccessEnabled   bool                            `json:"internet_access_enabled"`
 		NetworkIsolationEnabled bool                            `json:"network_isolation_enabled"`
+		FirewallZoneID          *string                         `json:"firewall_zone_id,omitempty"`
 		SettingPreference       *string                         `json:"setting_preference,omitempty"`
 		IGMPSnooping            bool                            `json:"igmp_snooping"`
 		DHCPguardEnabled        bool                            `json:"dhcpguard_enabled"`
+		DHCPDIP1                string                          `json:"dhcpd_ip_1"`
+		DHCPDIP2                string                          `json:"dhcpd_ip_2"`
+		DHCPDIP3                string                          `json:"dhcpd_ip_3"`
 		MdnsEnabled             bool                            `json:"mdns_enabled"`
-		LteLanEnabled           bool                            `json:"lte_lan_enabled"`
+		LteLanEnabled           *bool                           `json:"lte_lan_enabled,omitempty"`
 		IPAliases               []string                        `json:"ip_aliases"`
 		NATOutboundIPAddresses  []NetworkNATOutboundIPAddresses `json:"nat_outbound_ip_addresses"`
 		MACOverride             string                          `json:"mac_override,omitempty"`
@@ -87,10 +91,10 @@ func (n *Network) marshalCorporate() ([]byte, error) {
 		DHCPDStop              *string `json:"dhcpd_stop,omitempty"`
 		DHCPDLeaseTime         *int64  `json:"dhcpd_leasetime,omitempty"`
 		DHCPDDNSEnabled        bool    `json:"dhcpd_dns_enabled"`
-		DHCPDDNS1              string  `json:"dhcpd_dns_1,omitempty"`
-		DHCPDDNS2              string  `json:"dhcpd_dns_2,omitempty"`
-		DHCPDDNS3              string  `json:"dhcpd_dns_3,omitempty"`
-		DHCPDDNS4              string  `json:"dhcpd_dns_4,omitempty"`
+		DHCPDDNS1              *string `json:"dhcpd_dns_1,omitempty"`
+		DHCPDDNS2              *string `json:"dhcpd_dns_2,omitempty"`
+		DHCPDDNS3              *string `json:"dhcpd_dns_3,omitempty"`
+		DHCPDDNS4              *string `json:"dhcpd_dns_4,omitempty"`
 		DHCPDGatewayEnabled    bool    `json:"dhcpd_gateway_enabled"`
 		DHCPDGateway           *string `json:"dhcpd_gateway,omitempty"`
 		DHCPDNtpEnabled        bool    `json:"dhcpd_ntp_enabled"`
@@ -113,12 +117,28 @@ func (n *Network) marshalCorporate() ([]byte, error) {
 		DHCPRelayServers []string `json:"dhcp_relay_servers"`
 
 		// IPv6
-		IPV6InterfaceType     *string `json:"ipv6_interface_type,omitempty"`
-		IPV6SettingPreference *string `json:"ipv6_setting_preference,omitempty"`
-		IPV6RaPriority        *string `json:"ipv6_ra_priority,omitempty"`
+		IPV6InterfaceType           *string   `json:"ipv6_interface_type,omitempty"`
+		IPV6ClientAddressAssignment *string   `json:"ipv6_client_address_assignment,omitempty"`
+		IPV6SettingPreference       *string   `json:"ipv6_setting_preference,omitempty"`
+		IPV6Aliases                 *[]string `json:"ipv6_aliases,omitempty"`
+		IPV6RaPriority              *string   `json:"ipv6_ra_priority,omitempty"`
+		IPV6Subnet                  *string   `json:"ipv6_subnet,omitempty"`
+		IPV6RaEnabled               bool      `json:"ipv6_ra_enabled"`
+		IPV6RaPreferredLifetime     *int64    `json:"ipv6_ra_preferred_lifetime,omitempty"`
+		IPV6RaValidLifetime         *int64    `json:"ipv6_ra_valid_lifetime,omitempty"`
+		IPV6PDInterface             *string   `json:"ipv6_pd_interface,omitempty"`
+		IPV6PDPrefixid              string    `json:"ipv6_pd_prefixid"`
+		IPV6PDStart                 *string   `json:"ipv6_pd_start,omitempty"`
+		IPV6PDStop                  *string   `json:"ipv6_pd_stop,omitempty"`
+		IPV6PDAutoPrefixidEnabled   bool      `json:"ipv6_pd_auto_prefixid_enabled"`
 
 		// DHCPv6
-		DHCPDV6DNSAuto    bool    `json:"dhcpdv6_dns_auto,omitempty"`
+		DHCPDV6Enabled    bool    `json:"dhcpdv6_enabled"`
+		DHCPDV6DNSAuto    bool    `json:"dhcpdv6_dns_auto"`
+		DHCPDV6DNS1       *string `json:"dhcpdv6_dns_1,omitempty"`
+		DHCPDV6DNS2       *string `json:"dhcpdv6_dns_2,omitempty"`
+		DHCPDV6DNS3       *string `json:"dhcpdv6_dns_3,omitempty"`
+		DHCPDV6DNS4       *string `json:"dhcpdv6_dns_4,omitempty"`
 		DHCPDV6AllowSlaac bool    `json:"dhcpdv6_allow_slaac,omitempty"`
 		DHCPDV6Start      *string `json:"dhcpdv6_start,omitempty"`
 		DHCPDV6Stop       *string `json:"dhcpdv6_stop,omitempty"`
@@ -143,9 +163,13 @@ func (n *Network) marshalCorporate() ([]byte, error) {
 		GatewayType:             valueOrDefault(n.GatewayType, "default"),
 		InternetAccessEnabled:   n.InternetAccessEnabled,
 		NetworkIsolationEnabled: n.NetworkIsolationEnabled,
+		FirewallZoneID:          n.FirewallZoneID,
 		SettingPreference:       valueOrDefault(n.SettingPreference, "auto"),
 		IGMPSnooping:            n.IGMPSnooping,
 		DHCPguardEnabled:        n.DHCPguardEnabled,
+		DHCPDIP1:                n.DHCPDIP1,
+		DHCPDIP2:                n.DHCPDIP2,
+		DHCPDIP3:                n.DHCPDIP3,
 		MdnsEnabled:             n.MdnsEnabled,
 		LteLanEnabled:           n.LteLanEnabled,
 		IPAliases:               orEmptySlice(n.IPAliases),
@@ -165,8 +189,8 @@ func (n *Network) marshalCorporate() ([]byte, error) {
 		DHCPDGatewayEnabled:    n.DHCPDGatewayEnabled,
 		DHCPDGateway:           n.DHCPDGateway,
 		DHCPDNtpEnabled:        n.DHCPDNtpEnabled,
-		DHCPDNtp1:              nilIfEmpty(n.DHCPDNtp1),
-		DHCPDNtp2:              nilIfEmpty(n.DHCPDNtp2),
+		DHCPDNtp1:              n.DHCPDNtp1,
+		DHCPDNtp2:              n.DHCPDNtp2,
 		DHCPDWinsEnabled:       n.DHCPDWinsEnabled,
 		DHCPDWins1:             valueOrDefault(n.DHCPDWins1, ""),
 		DHCPDWins2:             valueOrDefault(n.DHCPDWins2, ""),
@@ -181,15 +205,31 @@ func (n *Network) marshalCorporate() ([]byte, error) {
 
 		// DHCP Relay
 		DHCPRelayEnabled: n.DHCPRelayEnabled,
-		DHCPRelayServers: orEmptySlice(n.RemoteVPNSubnets),
+		DHCPRelayServers: orEmptySlice(n.DHCPRelayServers),
 
 		// IPv6
-		IPV6InterfaceType:     valueOrDefault(n.IPV6InterfaceType, "none"),
-		IPV6SettingPreference: n.IPV6SettingPreference,
-		IPV6RaPriority:        n.IPV6RaPriority,
+		IPV6InterfaceType:           valueOrDefault(n.IPV6InterfaceType, "none"),
+		IPV6ClientAddressAssignment: n.IPV6ClientAddressAssignment,
+		IPV6SettingPreference:       n.IPV6SettingPreference,
+		IPV6Aliases:                 sliceOrOmit(n.IPV6Aliases),
+		IPV6RaPriority:              n.IPV6RaPriority,
+		IPV6Subnet:                  n.IPV6Subnet,
+		IPV6RaEnabled:               n.IPV6RaEnabled,
+		IPV6RaPreferredLifetime:     n.IPV6RaPreferredLifetime,
+		IPV6RaValidLifetime:         n.IPV6RaValidLifetime,
+		IPV6PDInterface:             n.IPV6PDInterface,
+		IPV6PDPrefixid:              n.IPV6PDPrefixid,
+		IPV6PDStart:                 n.IPV6PDStart,
+		IPV6PDStop:                  n.IPV6PDStop,
+		IPV6PDAutoPrefixidEnabled:   n.IPV6PDAutoPrefixidEnabled,
 
 		// DHCPv6
+		DHCPDV6Enabled:    n.DHCPDV6Enabled,
 		DHCPDV6DNSAuto:    n.DHCPDV6DNSAuto,
+		DHCPDV6DNS1:       n.DHCPDV6DNS1,
+		DHCPDV6DNS2:       n.DHCPDV6DNS2,
+		DHCPDV6DNS3:       n.DHCPDV6DNS3,
+		DHCPDV6DNS4:       n.DHCPDV6DNS4,
 		DHCPDV6AllowSlaac: n.DHCPDV6AllowSlaac,
 		DHCPDV6Start:      n.DHCPDV6Start,
 		DHCPDV6Stop:       n.DHCPDV6Stop,
@@ -270,21 +310,25 @@ func (n *Network) marshalGuest() ([]byte, error) {
 
 		Name                    *string                         `json:"name,omitempty"`
 		Purpose                 string                          `json:"purpose"`
-		Enabled                 bool                            `json:"enabled"`
+		Enabled                 *bool                           `json:"enabled,omitempty"`
 		NetworkGroup            *string                         `json:"networkgroup,omitempty"`
 		IPSubnet                *string                         `json:"ip_subnet,omitempty"`
 		VLAN                    *int64                          `json:"vlan,omitempty"`
 		VLANEnabled             bool                            `json:"vlan_enabled"`
 		DomainName              *string                         `json:"domain_name,omitempty"`
-		AutoScaleEnabled        bool                            `json:"auto_scale_enabled"`
+		AutoScaleEnabled        *bool                           `json:"auto_scale_enabled,omitempty"`
 		GatewayType             *string                         `json:"gateway_type,omitempty"`
 		InternetAccessEnabled   bool                            `json:"internet_access_enabled"`
 		NetworkIsolationEnabled bool                            `json:"network_isolation_enabled"`
+		FirewallZoneID          *string                         `json:"firewall_zone_id,omitempty"`
 		SettingPreference       *string                         `json:"setting_preference,omitempty"`
 		IGMPSnooping            bool                            `json:"igmp_snooping"`
 		DHCPguardEnabled        bool                            `json:"dhcpguard_enabled"`
+		DHCPDIP1                string                          `json:"dhcpd_ip_1"`
+		DHCPDIP2                string                          `json:"dhcpd_ip_2"`
+		DHCPDIP3                string                          `json:"dhcpd_ip_3"`
 		MdnsEnabled             bool                            `json:"mdns_enabled"`
-		LteLanEnabled           bool                            `json:"lte_lan_enabled"`
+		LteLanEnabled           *bool                           `json:"lte_lan_enabled,omitempty"`
 		IPAliases               []string                        `json:"ip_aliases"`
 		NATOutboundIPAddresses  []NetworkNATOutboundIPAddresses `json:"nat_outbound_ip_addresses"`
 		MACOverride             string                          `json:"mac_override,omitempty"`
@@ -295,10 +339,10 @@ func (n *Network) marshalGuest() ([]byte, error) {
 		DHCPDStop              *string `json:"dhcpd_stop,omitempty"`
 		DHCPDLeaseTime         *int64  `json:"dhcpd_leasetime,omitempty"`
 		DHCPDDNSEnabled        bool    `json:"dhcpd_dns_enabled"`
-		DHCPDDNS1              string  `json:"dhcpd_dns_1,omitempty"`
-		DHCPDDNS2              string  `json:"dhcpd_dns_2,omitempty"`
-		DHCPDDNS3              string  `json:"dhcpd_dns_3,omitempty"`
-		DHCPDDNS4              string  `json:"dhcpd_dns_4,omitempty"`
+		DHCPDDNS1              *string `json:"dhcpd_dns_1,omitempty"`
+		DHCPDDNS2              *string `json:"dhcpd_dns_2,omitempty"`
+		DHCPDDNS3              *string `json:"dhcpd_dns_3,omitempty"`
+		DHCPDDNS4              *string `json:"dhcpd_dns_4,omitempty"`
 		DHCPDGatewayEnabled    bool    `json:"dhcpd_gateway_enabled"`
 		DHCPDGateway           *string `json:"dhcpd_gateway,omitempty"`
 		DHCPDNtpEnabled        bool    `json:"dhcpd_ntp_enabled"`
@@ -321,12 +365,28 @@ func (n *Network) marshalGuest() ([]byte, error) {
 		DHCPRelayServers []string `json:"dhcp_relay_servers"`
 
 		// IPv6
-		IPV6InterfaceType     *string `json:"ipv6_interface_type,omitempty"`
-		IPV6SettingPreference *string `json:"ipv6_setting_preference,omitempty"`
-		IPV6RaPriority        *string `json:"ipv6_ra_priority,omitempty"`
+		IPV6InterfaceType           *string   `json:"ipv6_interface_type,omitempty"`
+		IPV6ClientAddressAssignment *string   `json:"ipv6_client_address_assignment,omitempty"`
+		IPV6SettingPreference       *string   `json:"ipv6_setting_preference,omitempty"`
+		IPV6Aliases                 *[]string `json:"ipv6_aliases,omitempty"`
+		IPV6RaPriority              *string   `json:"ipv6_ra_priority,omitempty"`
+		IPV6Subnet                  *string   `json:"ipv6_subnet,omitempty"`
+		IPV6RaEnabled               bool      `json:"ipv6_ra_enabled"`
+		IPV6RaPreferredLifetime     *int64    `json:"ipv6_ra_preferred_lifetime,omitempty"`
+		IPV6RaValidLifetime         *int64    `json:"ipv6_ra_valid_lifetime,omitempty"`
+		IPV6PDInterface             *string   `json:"ipv6_pd_interface,omitempty"`
+		IPV6PDPrefixid              string    `json:"ipv6_pd_prefixid"`
+		IPV6PDStart                 *string   `json:"ipv6_pd_start,omitempty"`
+		IPV6PDStop                  *string   `json:"ipv6_pd_stop,omitempty"`
+		IPV6PDAutoPrefixidEnabled   bool      `json:"ipv6_pd_auto_prefixid_enabled"`
 
 		// DHCPv6
-		DHCPDV6DNSAuto    bool    `json:"dhcpdv6_dns_auto,omitempty"`
+		DHCPDV6Enabled    bool    `json:"dhcpdv6_enabled"`
+		DHCPDV6DNSAuto    bool    `json:"dhcpdv6_dns_auto"`
+		DHCPDV6DNS1       *string `json:"dhcpdv6_dns_1,omitempty"`
+		DHCPDV6DNS2       *string `json:"dhcpdv6_dns_2,omitempty"`
+		DHCPDV6DNS3       *string `json:"dhcpdv6_dns_3,omitempty"`
+		DHCPDV6DNS4       *string `json:"dhcpdv6_dns_4,omitempty"`
 		DHCPDV6AllowSlaac bool    `json:"dhcpdv6_allow_slaac,omitempty"`
 		DHCPDV6Start      *string `json:"dhcpdv6_start,omitempty"`
 		DHCPDV6Stop       *string `json:"dhcpdv6_stop,omitempty"`
@@ -351,9 +411,13 @@ func (n *Network) marshalGuest() ([]byte, error) {
 		GatewayType:             valueOrDefault(n.GatewayType, "default"),
 		InternetAccessEnabled:   n.InternetAccessEnabled,
 		NetworkIsolationEnabled: n.NetworkIsolationEnabled,
+		FirewallZoneID:          n.FirewallZoneID,
 		SettingPreference:       valueOrDefault(n.SettingPreference, "auto"),
 		IGMPSnooping:            n.IGMPSnooping,
 		DHCPguardEnabled:        n.DHCPguardEnabled,
+		DHCPDIP1:                n.DHCPDIP1,
+		DHCPDIP2:                n.DHCPDIP2,
+		DHCPDIP3:                n.DHCPDIP3,
 		MdnsEnabled:             n.MdnsEnabled,
 		LteLanEnabled:           n.LteLanEnabled,
 		IPAliases:               orEmptySlice(n.IPAliases),
@@ -373,8 +437,8 @@ func (n *Network) marshalGuest() ([]byte, error) {
 		DHCPDGatewayEnabled:    n.DHCPDGatewayEnabled,
 		DHCPDGateway:           n.DHCPDGateway,
 		DHCPDNtpEnabled:        n.DHCPDNtpEnabled,
-		DHCPDNtp1:              nilIfEmpty(n.DHCPDNtp1),
-		DHCPDNtp2:              nilIfEmpty(n.DHCPDNtp2),
+		DHCPDNtp1:              n.DHCPDNtp1,
+		DHCPDNtp2:              n.DHCPDNtp2,
 		DHCPDWinsEnabled:       n.DHCPDWinsEnabled,
 		DHCPDWins1:             valueOrDefault(n.DHCPDWins1, ""),
 		DHCPDWins2:             valueOrDefault(n.DHCPDWins2, ""),
@@ -392,12 +456,28 @@ func (n *Network) marshalGuest() ([]byte, error) {
 		DHCPRelayServers: orEmptySlice(n.DHCPRelayServers),
 
 		// IPv6
-		IPV6InterfaceType:     valueOrDefault(n.IPV6InterfaceType, "none"),
-		IPV6SettingPreference: n.IPV6SettingPreference,
-		IPV6RaPriority:        n.IPV6RaPriority,
+		IPV6InterfaceType:           valueOrDefault(n.IPV6InterfaceType, "none"),
+		IPV6ClientAddressAssignment: n.IPV6ClientAddressAssignment,
+		IPV6SettingPreference:       n.IPV6SettingPreference,
+		IPV6Aliases:                 sliceOrOmit(n.IPV6Aliases),
+		IPV6RaPriority:              n.IPV6RaPriority,
+		IPV6Subnet:                  n.IPV6Subnet,
+		IPV6RaEnabled:               n.IPV6RaEnabled,
+		IPV6RaPreferredLifetime:     n.IPV6RaPreferredLifetime,
+		IPV6RaValidLifetime:         n.IPV6RaValidLifetime,
+		IPV6PDInterface:             n.IPV6PDInterface,
+		IPV6PDPrefixid:              n.IPV6PDPrefixid,
+		IPV6PDStart:                 n.IPV6PDStart,
+		IPV6PDStop:                  n.IPV6PDStop,
+		IPV6PDAutoPrefixidEnabled:   n.IPV6PDAutoPrefixidEnabled,
 
 		// DHCPv6
+		DHCPDV6Enabled:    n.DHCPDV6Enabled,
 		DHCPDV6DNSAuto:    n.DHCPDV6DNSAuto,
+		DHCPDV6DNS1:       n.DHCPDV6DNS1,
+		DHCPDV6DNS2:       n.DHCPDV6DNS2,
+		DHCPDV6DNS3:       n.DHCPDV6DNS3,
+		DHCPDV6DNS4:       n.DHCPDV6DNS4,
 		DHCPDV6AllowSlaac: n.DHCPDV6AllowSlaac,
 		DHCPDV6Start:      n.DHCPDV6Start,
 		DHCPDV6Stop:       n.DHCPDV6Stop,
@@ -417,7 +497,7 @@ func (n *Network) marshalWAN() ([]byte, error) {
 
 		Name    *string `json:"name,omitempty"`
 		Purpose string  `json:"purpose"`
-		Enabled bool    `json:"enabled"`
+		Enabled *bool   `json:"enabled,omitempty"`
 
 		// WAN type fields
 		WANType         *string `json:"wan_type,omitempty"`
@@ -433,6 +513,11 @@ func (n *Network) marshalWAN() ([]byte, error) {
 		WANDHCPv6Cos *int64 `json:"wan_dhcpv6_cos,omitempty"`
 
 		// DNS fields
+		// PPPoE credentials: omitempty so an update that does not manage
+		// them preserves the ISP login rather than clearing it.
+		WANUsername *string `json:"wan_username,omitempty"`
+		WANPassword *string `json:"x_wan_password,omitempty"`
+
 		WANDNS1              *string `json:"wan_dns1,omitempty"`
 		WANDNS2              *string `json:"wan_dns2,omitempty"`
 		WANDNSPreference     *string `json:"wan_dns_preference,omitempty"`
@@ -465,9 +550,17 @@ func (n *Network) marshalWAN() ([]byte, error) {
 		WANLoadBalanceWeight *int64  `json:"wan_load_balance_weight,omitempty"`
 		WANFailoverPriority  *int64  `json:"wan_failover_priority,omitempty"`
 
-		// IGMP fields
-		IGMPProxyFor      *string `json:"igmp_proxy_for,omitempty"`
-		IGMPProxyUpstream bool    `json:"igmp_proxy_upstream"`
+		// MTU fields. interface_mtu_enabled is a plain bool on Network, so it
+		// is only sent when the caller manages the MTU (see wanMTUEnabled); a
+		// caller that does not cannot switch a configured MTU override off.
+		InterfaceMtu        *int64 `json:"interface_mtu,omitempty"`
+		InterfaceMtuEnabled *bool  `json:"interface_mtu_enabled,omitempty"`
+
+		// IGMP fields. Downstream networks are tri-state: nil stays off the
+		// wire, an empty non-nil slice is sent as [] to clear the list.
+		IGMPProxyFor                  *string   `json:"igmp_proxy_for,omitempty"`
+		IGMPProxyUpstream             bool      `json:"igmp_proxy_upstream"`
+		IGMPProxyDownstreamNetworkIDs *[]string `json:"igmp_proxy_downstream_networkconf_ids,omitempty"`
 
 		// Event / alias fields
 		ReportWANEvent bool                    `json:"report_wan_event"`
@@ -502,6 +595,8 @@ func (n *Network) marshalWAN() ([]byte, error) {
 		WANDHCPv6Cos: n.WANDHCPv6Cos,
 
 		// DNS fields
+		WANUsername:          n.WANUsername,
+		WANPassword:          n.WANPassword,
 		WANDNS1:              n.WANDNS1,
 		WANDNS2:              n.WANDNS2,
 		WANDNSPreference:     n.WANDNSPreference,
@@ -534,9 +629,14 @@ func (n *Network) marshalWAN() ([]byte, error) {
 		WANLoadBalanceWeight: n.WANLoadBalanceWeight,
 		WANFailoverPriority:  n.WANFailoverPriority,
 
+		// MTU fields
+		InterfaceMtu:        n.InterfaceMtu,
+		InterfaceMtuEnabled: wanMTUEnabled(n),
+
 		// IGMP fields
-		IGMPProxyFor:      n.IGMPProxyFor,
-		IGMPProxyUpstream: n.IGMPProxyUpstream,
+		IGMPProxyFor:                  n.IGMPProxyFor,
+		IGMPProxyUpstream:             n.IGMPProxyUpstream,
+		IGMPProxyDownstreamNetworkIDs: sliceOrNil(n.IGMPProxyDownstreamNetworkIDs),
 
 		// Event / alias fields
 		ReportWANEvent: n.ReportWANEvent,
@@ -560,7 +660,48 @@ func (n *Network) marshalSiteVPN() ([]byte, error) {
 
 		Name    *string `json:"name,omitempty"`
 		Purpose string  `json:"purpose"`
-		Enabled bool    `json:"enabled"`
+		Enabled *bool   `json:"enabled,omitempty"`
+
+		// VPN / IPsec
+		VPNType                        *string `json:"vpn_type,omitempty"`
+		IPSecInterface                 *string `json:"ipsec_interface,omitempty"`
+		IPSecPeerIP                    *string `json:"ipsec_peer_ip,omitempty"`
+		IPSecLocalIP                   *string `json:"ipsec_local_ip,omitempty"`
+		IPSecTunnelIP                  *string `json:"ipsec_tunnel_ip,omitempty"`
+		IPSecTunnelIPEnabled           bool    `json:"ipsec_tunnel_ip_enabled,omitempty"`
+		RemoteVPNDynamicSubnetsEnabled bool    `json:"remote_vpn_dynamic_subnets_enabled,omitempty"`
+
+		// IKE peer-authentication identifiers. The *Enabled flags are plain
+		// bools on Network, but omitempty here keeps a false off the wire so a
+		// caller that does not manage them cannot turn identifier
+		// authentication off on a live tunnel.
+		IPSecLocalIDentifier         *string `json:"ipsec_local_identifier,omitempty"`
+		IPSecLocalIDentifierEnabled  bool    `json:"ipsec_local_identifier_enabled,omitempty"`
+		IPSecRemoteIDentifier        *string `json:"ipsec_remote_identifier,omitempty"`
+		IPSecRemoteIDentifierEnabled bool    `json:"ipsec_remote_identifier_enabled,omitempty"`
+		IPSecKeyExchange             *string `json:"ipsec_key_exchange,omitempty"`
+		IPSecPreSharedKey            *string `json:"x_ipsec_pre_shared_key,omitempty"`
+		IPSecProfile                 *string `json:"ipsec_profile,omitempty"`
+		IPSecDhGroup                 *int64  `json:"ipsec_dh_group,omitempty"`
+
+		// IKE (phase 1)
+		IPSecIkeEncryption *string `json:"ipsec_ike_encryption,omitempty"`
+		IPSecIkeHash       *string `json:"ipsec_ike_hash,omitempty"`
+		IPSecIkeDhGroup    *int64  `json:"ipsec_ike_dh_group,omitempty"`
+		IPSecIkeLifetime   *int64  `json:"ipsec_ike_lifetime,omitempty"`
+
+		// ESP (phase 2)
+		IPSecEspEncryption *string `json:"ipsec_esp_encryption,omitempty"`
+		IPSecEspHash       *string `json:"ipsec_esp_hash,omitempty"`
+		IPSecEspDhGroup    *int64  `json:"ipsec_esp_dh_group,omitempty"`
+		IPSecEspLifetime   *int64  `json:"ipsec_esp_lifetime,omitempty"`
+
+		IPSecPfs            bool `json:"ipsec_pfs,omitempty"`
+		IPSecDynamicRouting bool `json:"ipsec_dynamic_routing,omitempty"`
+
+		RemoteVPNSubnets  []string `json:"remote_vpn_subnets"`
+		RemoteSiteSubnets []string `json:"remote_site_subnets,omitempty"`
+		RouteDistance     *int64   `json:"route_distance,omitempty"`
 	}{
 		ID:       n.ID,
 		SiteID:   n.SiteID,
@@ -572,6 +713,40 @@ func (n *Network) marshalSiteVPN() ([]byte, error) {
 		Name:    n.Name,
 		Purpose: n.Purpose,
 		Enabled: n.Enabled,
+
+		VPNType:        n.VPNType,
+		IPSecInterface: n.IPSecInterface,
+		IPSecPeerIP:    n.IPSecPeerIP,
+
+		IPSecLocalIDentifier:           n.IPSecLocalIDentifier,
+		IPSecLocalIDentifierEnabled:    n.IPSecLocalIDentifierEnabled,
+		IPSecRemoteIDentifier:          n.IPSecRemoteIDentifier,
+		IPSecRemoteIDentifierEnabled:   n.IPSecRemoteIDentifierEnabled,
+		IPSecLocalIP:                   n.IPSecLocalIP,
+		IPSecTunnelIP:                  n.IPSecTunnelIP,
+		IPSecTunnelIPEnabled:           n.IPSecTunnelIPEnabled,
+		RemoteVPNDynamicSubnetsEnabled: n.RemoteVPNDynamicSubnetsEnabled,
+		IPSecKeyExchange:               n.IPSecKeyExchange,
+		IPSecPreSharedKey:              n.IPSecPreSharedKey,
+		IPSecProfile:                   n.IPSecProfile,
+		IPSecDhGroup:                   n.IPSecDhGroup,
+
+		IPSecIkeEncryption: n.IPSecIkeEncryption,
+		IPSecIkeHash:       n.IPSecIkeHash,
+		IPSecIkeDhGroup:    n.IPSecIkeDhGroup,
+		IPSecIkeLifetime:   n.IPSecIkeLifetime,
+
+		IPSecEspEncryption: n.IPSecEspEncryption,
+		IPSecEspHash:       n.IPSecEspHash,
+		IPSecEspDhGroup:    n.IPSecEspDhGroup,
+		IPSecEspLifetime:   n.IPSecEspLifetime,
+
+		IPSecPfs:            n.IPSecPfs,
+		IPSecDynamicRouting: n.IPSecDynamicRouting,
+
+		RemoteVPNSubnets:  orEmptySlice(n.RemoteVPNSubnets),
+		RemoteSiteSubnets: n.RemoteSiteSubnets,
+		RouteDistance:     n.RouteDistance,
 	})
 }
 
@@ -587,7 +762,7 @@ func (n *Network) marshalVPNClient() ([]byte, error) {
 
 		Name     *string `json:"name,omitempty"`
 		Purpose  string  `json:"purpose"`
-		Enabled  bool    `json:"enabled"`
+		Enabled  *bool   `json:"enabled,omitempty"`
 		IPSubnet *string `json:"ip_subnet,omitempty"`
 
 		// VPN Type
@@ -610,8 +785,8 @@ func (n *Network) marshalVPNClient() ([]byte, error) {
 		WireguardPrivateKey                  *string `json:"x_wireguard_private_key,omitempty"`
 
 		// DNS servers for WireGuard interface
-		DHCPDDNS1 string `json:"dhcpd_dns_1,omitempty"`
-		DHCPDDNS2 string `json:"dhcpd_dns_2,omitempty"`
+		DHCPDDNS1 *string `json:"dhcpd_dns_1,omitempty"`
+		DHCPDDNS2 *string `json:"dhcpd_dns_2,omitempty"`
 	}{
 		ID:       n.ID,
 		SiteID:   n.SiteID,
@@ -662,17 +837,18 @@ func (n *Network) marshalUserVPN() ([]byte, error) {
 
 		Name              *string `json:"name,omitempty"`
 		Purpose           string  `json:"purpose"`
-		Enabled           bool    `json:"enabled"`
+		Enabled           *bool   `json:"enabled,omitempty"`
 		SettingPreference *string `json:"setting_preference,omitempty"`
 		IPSubnet          *string `json:"ip_subnet,omitempty"`
+		IPV6Subnet        *string `json:"ipv6_subnet,omitempty"`
 
 		// VPN Type
 		VPNType *string `json:"vpn_type,omitempty"`
 
 		// DNS
-		DHCPDDNS1       string `json:"dhcpd_dns_1,omitempty"`
-		DHCPDDNS2       string `json:"dhcpd_dns_2,omitempty"`
-		DHCPDDNSEnabled bool   `json:"dhcpd_dns_enabled"`
+		DHCPDDNS1       *string `json:"dhcpd_dns_1,omitempty"`
+		DHCPDDNS2       *string `json:"dhcpd_dns_2,omitempty"`
+		DHCPDDNSEnabled bool    `json:"dhcpd_dns_enabled"`
 
 		// DHCP Range
 		DHCPDStart *string `json:"dhcpd_start,omitempty"`
@@ -723,6 +899,7 @@ func (n *Network) marshalUserVPN() ([]byte, error) {
 		Enabled:           n.Enabled,
 		SettingPreference: n.SettingPreference,
 		IPSubnet:          n.IPSubnet,
+		IPV6Subnet:        n.IPV6Subnet,
 
 		// VPN Type
 		VPNType: n.VPNType,
@@ -773,6 +950,16 @@ func (n *Network) marshalUserVPN() ([]byte, error) {
 
 // Helper functions for field transformations
 
+// sliceOrOmit omits a nil slice from the payload but sends a non-nil empty
+// slice as [], so a caller can leave a list untouched (nil) or clear it
+// ([]string{}).
+func sliceOrOmit(s []string) *[]string {
+	if s == nil {
+		return nil
+	}
+	return &s
+}
+
 func orEmptySlice(s []string) []string {
 	if len(s) > 0 {
 		return s
@@ -794,11 +981,26 @@ func orEmptyWANDHCPOptions(s []NetworkWANDHCPOptions) []NetworkWANDHCPOptions {
 	return []NetworkWANDHCPOptions{}
 }
 
-func nilIfEmpty(s *string) *string {
-	if s != nil && *s == "" {
+// wanMTUEnabled returns interface_mtu_enabled for the WAN encoder, or nil to
+// leave it off the wire. Network.InterfaceMtuEnabled is a plain bool, so a
+// false cannot tell "disabled" from "not managed". It is sent when true, or
+// when InterfaceMtu is set: a caller that sets the MTU manages the override,
+// so its false is meant and is sent to switch the override off.
+func wanMTUEnabled(n *Network) *bool {
+	if !n.InterfaceMtuEnabled && n.InterfaceMtu == nil {
 		return nil
 	}
-	return s
+	enabled := n.InterfaceMtuEnabled
+	return &enabled
+}
+
+// sliceOrNil returns a pointer to s, or nil when s is nil, so that with
+// omitempty a nil slice stays off the wire and an empty one is sent as [].
+func sliceOrNil[T any](s []T) *[]T {
+	if s == nil {
+		return nil
+	}
+	return &s
 }
 
 func derefOrEmpty(s *string) string {

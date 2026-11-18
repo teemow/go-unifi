@@ -40,6 +40,7 @@ type Client struct {
 	FixedApMAC                    string   `json:"fixed_ap_mac,omitempty"` // ^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$
 	FixedIP                       string   `json:"fixed_ip,omitempty"`
 	Hostname                      string   `json:"hostname,omitempty"`
+	LastIP                        string   `json:"last_ip,omitempty"` // non-generated field
 	LastSeen                      *int64   `json:"last_seen,omitempty"`
 	LocalDNSRecord                string   `json:"local_dns_record,omitempty"`
 	LocalDNSRecordEnabled         bool     `json:"local_dns_record_enabled"`
@@ -57,6 +58,8 @@ type Client struct {
 func (dst *Client) UnmarshalJSON(b []byte) error {
 	type Alias Client
 	aux := &struct {
+		Blocked *types.Bool `json:"blocked"`
+
 		*Alias
 	}{
 		Alias: (*Alias)(dst),
@@ -66,6 +69,7 @@ func (dst *Client) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return fmt.Errorf("unable to unmarshal alias: %w", err)
 	}
+	dst.Blocked = boolPtrValue(aux.Blocked)
 
 	return nil
 }

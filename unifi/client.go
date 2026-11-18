@@ -6,6 +6,8 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 )
 
 // GetClientByMAC returns slightly different information than GetClient, as they
@@ -19,7 +21,7 @@ func (c *ApiClient) GetClientByMAC(ctx context.Context, site, mac string) (*Clie
 	if len(resp) == 0 {
 		return nil, &NotFoundError{}
 	}
-	if i := slices.IndexFunc(resp, func(d Client) bool { return d.MAC == mac }); i >= 0 {
+	if i := slices.IndexFunc(resp, func(d Client) bool { return strings.EqualFold(d.MAC, mac) }); i >= 0 {
 		d := resp[i]
 		return &d, nil
 	} else {
@@ -27,11 +29,14 @@ func (c *ApiClient) GetClientByMAC(ctx context.Context, site, mac string) (*Clie
 	}
 }
 
-func (c *ApiClient) stamgr(
+// stamgrMeta issues a station-manager command and returns the response rc
+// alongside the client data, so callers can distinguish a genuine miss from a
+// success that echoed no client object.
+func (c *ApiClient) stamgrMeta(
 	ctx context.Context,
 	site, cmd string,
 	data map[string]any,
-) ([]Client, error) {
+) (string, []Client, error) {
 	reqBody := map[string]any{}
 
 	maps.Copy(reqBody, data)
@@ -45,10 +50,47 @@ func (c *ApiClient) stamgr(
 
 	err := c.do(ctx, http.MethodPost, fmt.Sprintf("api/s/%s/cmd/stamgr", site), reqBody, &respBody)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
-	return respBody.Data, nil
+	return respBody.Meta.RC, respBody.Data, nil
+}
+
+func (c *ApiClient) stamgr(
+	ctx context.Context,
+	site, cmd string,
+	data map[string]any,
+) ([]Client, error) {
+	_, clients, err := c.stamgrMeta(ctx, site, cmd, data)
+	return clients, err
+}
+
+// AuthorizeClientByMAC authorizes a guest WiFi session by MAC via the
+// authorize-guest station-manager command. minutes must be a decimal integer
+// string (e.g. "480"); it is sent to the controller as a JSON number so the
+// session expiry is honoured. If minutes is empty or unparseable the field is
+// omitted and the controller applies its own default (typically unlimited).
+// Some UniFi OS builds answer authorize-guest with rc:"ok" and an empty data
+// array even though the client was authorized, so unlike the other station
+// commands an empty reply is treated as success.
+func (c *ApiClient) AuthorizeClientByMAC(ctx context.Context, site, mac, apMAC, minutes string) error {
+	params := map[string]any{
+		"ap_mac": apMAC,
+		"mac":    mac,
+	}
+	if m, err := strconv.Atoi(minutes); err == nil && m > 0 {
+		params["minutes"] = m
+	}
+
+	rc, clients, err := c.stamgrMeta(ctx, site, "authorize-guest", params)
+	if err != nil {
+		return err
+	}
+	if rc == "ok" && len(clients) <= 1 {
+		return nil
+	}
+
+	return &NotFoundError{}
 }
 
 func (c *ApiClient) BlockClientByMAC(ctx context.Context, site, mac string) error {
