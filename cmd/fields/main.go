@@ -773,6 +773,12 @@ func main() {
 				// retain ld_mode for pre-10.6.109 controllers. A pointer like its
 				// siblings so a nil value is never written.
 				portOverrides.Fields["LdMode"] = NewFieldInfo("LdMode", "ld_mode", fields.Bool, "", true, false, true, "")
+				// lag_idx names the link aggregation group of an op_mode "aggregate"
+				// port. The field spec does not list it, but the controller stores it
+				// and needs it back: port_overrides is a full-replace array, and an
+				// aggregate port written without its lag_idx falls back to op_mode
+				// "switch", which tears the LAG down.
+				portOverrides.Fields["LagIdx"] = NewFieldInfo("LagIdx", "lag_idx", fields.Int, "[1-9]|[1-9][0-9]|^$", true, false, true, fields.Number)
 			}
 		}
 

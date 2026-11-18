@@ -85,3 +85,38 @@ func TestDevicePortOverridesLoopDetectionKeys(t *testing.T) {
 		})
 	}
 }
+
+// lag_idx names the link aggregation group of an aggregate port. It is not in
+// the controller's field spec, but an aggregate port written back without it
+// falls back to op_mode "switch", so it has to survive the round-trip that
+// every update of port_overrides goes through.
+func TestDevicePortOverridesLagIdx(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want, absent string
+	}{
+		{
+			"aggregate port keeps its group",
+			`{"port_idx":1,"op_mode":"aggregate","aggregate_members":[1,2],"lag_idx":1}`,
+			`"lag_idx":1`, "",
+		},
+		{"plain port gains none", `{"port_idx":7}`, "", `"lag_idx"`},
+		{"empty value is unset", `{"port_idx":7,"lag_idx":""}`, "", `"lag_idx"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var po DevicePortOverrides
+			if err := json.Unmarshal([]byte(tc.in), &po); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			body, err := json.Marshal(po)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if tc.want != "" && !strings.Contains(string(body), tc.want) {
+				t.Errorf("want %s in body: %s", tc.want, body)
+			}
+			if tc.absent != "" && strings.Contains(string(body), tc.absent) {
+				t.Errorf("want no %s in body: %s", tc.absent, body)
+			}
+		})
+	}
+}
